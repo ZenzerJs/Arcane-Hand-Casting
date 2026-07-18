@@ -9,9 +9,13 @@
  *   vertical stack   → fireball
  *   horizontal stack → lightning (when any cross-hand beams overlap)
  *
+ * Lightning visuals: five tip↔tip arcs (matching digits). Unreadable tips
+ * drop the tip↔tip attempt and emit a short local flicker instead.
+ *
  * Coordinates are camera-normalized (0..1, x un-mirrored).
  */
 
+import { fingerExtension } from "@/vision/features";
 import type { HandFrame, Vec2 } from "@/vision/types";
 
 /** [mcp, pip/ip, tip] landmark indices for each digit. */
@@ -32,6 +36,21 @@ const TIP_TOUCH_DISTANCE = 0.1;
  * dy/dx ≥ this → vertical; dx/dy ≥ this → horizontal.
  */
 const STACK_AXIS_RATIO = 1.25;
+/** Tip within this margin of frame edge = hard to trust. */
+const TIP_EDGE_MARGIN = 0.02;
+/** PIP→TIP shorter than this (normalized) = collapsed / unreadable. */
+const MIN_TIP_BONE = 0.012;
+/** Below this extension, tip pose is too curled to bridge hands. */
+const MIN_TIP_EXTENSION = 0.18;
+/** Local flicker length when tip↔tip arc is abandoned (normalized). */
+const FLICKER_JET = 0.04;
+/**
+ * When tips collapse onto each other, use a short spark along the beam —
+ * absolute length, NOT a fraction of BEAM_LENGTH (that drew screen-wide rods).
+ */
+const COLLAPSE_JET = 0.07;
+/** Tips closer than this are treated as collapsed. */
+const COLLAPSE_GAP = 0.012;
 
 export type Beam = {
   /** Beam start = fingertip. */
@@ -152,14 +171,21 @@ export function findBeamHit(
   return findBeamHits(handA, handB)[0] ?? null;
 }
 
-/** Visual bolt segment in normalized camera space (from → to). */
-export type BoltSegment = readonly [Vec2, Vec2];
+/** Visual bolt: tip↔tip arc, or short local flicker when tips unreadable. */
+export type BoltSegment = {
+  from: Vec2;
+  to: Vec2;
+  /** Matching digit (0=thumb … 4=pinky). */
+  finger: number;
+  kind: "arc" | "flicker";
+};
 
 /**
  * Exactly five bolts — one per digit (thumb→pinky).
  *
- * Each bolt leaves that finger on hand A and travels toward the matching
- * fingertip on hand B. One bolt per finger pair, never a hit-mesh swarm.
+ * Readable tips → arc from hand A tip to matching hand B tip (L↔R).
+ * Either tip hard to read → drop the bridge; short flicker on best tip.
+ * Tips nearly stacked → short outward jet (still `arc`, not an orb).
  */
 export function fingerBolts(
   handA: HandFrame,
@@ -169,23 +195,61 @@ export function fingerBolts(
   const beamsB = computeHandBeams(handB);
   return beamsA.map((a, i) => {
     const b = beamsB[i];
+    const readableA = tipReadable(handA, i);
+    const readableB = tipReadable(handB, i);
+
+    if (!readableA || !readableB) {
+      const anchor = readableA ? a : readableB ? b : a;
+      return {
+        from: anchor.origin,
+        to: jetAlongDir(anchor, FLICKER_JET),
+        finger: i,
+        kind: "flicker",
+      };
+    }
+
     const gap = dist(a.origin, b.origin);
-    // Tips nearly stacked → fall back to a short outward jet so the bolt
-    // still has length instead of collapsing into an orb.
-    if (gap < 0.04) return jetAlongBeam(a);
-    return [a.origin, b.origin] as const;
+    // Prefer real tip↔tip. Only collapse → short spark when tips coincide.
+    if (gap < COLLAPSE_GAP) {
+      return {
+        from: a.origin,
+        to: jetAlongDir(a, COLLAPSE_JET),
+        finger: i,
+        kind: "arc",
+      };
+    }
+
+    return { from: a.origin, to: b.origin, finger: i, kind: "arc" };
   });
 }
 
-/** Outward jet from fingertip partway along the invisible beam. */
-function jetAlongBeam(beam: Beam, fraction = 0.55): BoltSegment {
-  return [
-    beam.origin,
-    {
-      x: beam.origin.x + (beam.tip.x - beam.origin.x) * fraction,
-      y: beam.origin.y + (beam.tip.y - beam.origin.y) * fraction,
-    },
-  ];
+/** True when fingertip landmarks look trustworthy for a tip↔tip bolt. */
+export function tipReadable(hand: HandFrame, finger: number): boolean {
+  const [mcp, pip, tip] = FINGER_CHAINS[finger];
+  const tipPt = xy(hand.landmarks[tip]);
+  if (
+    tipPt.x <= TIP_EDGE_MARGIN ||
+    tipPt.x >= 1 - TIP_EDGE_MARGIN ||
+    tipPt.y <= TIP_EDGE_MARGIN ||
+    tipPt.y >= 1 - TIP_EDGE_MARGIN
+  ) {
+    return false;
+  }
+  const pipPt = xy(hand.landmarks[pip]);
+  if (dist(tipPt, pipPt) < MIN_TIP_BONE) return false;
+  const mcpPt = xy(hand.landmarks[mcp]);
+  return fingerExtension(mcpPt, pipPt, tipPt) >= MIN_TIP_EXTENSION;
+}
+
+/** Short jet from fingertip along beam direction (absolute normalized length). */
+function jetAlongDir(beam: Beam, length: number): Vec2 {
+  const dx = beam.tip.x - beam.origin.x;
+  const dy = beam.tip.y - beam.origin.y;
+  const mag = Math.hypot(dx, dy) || 1;
+  return {
+    x: beam.origin.x + (dx / mag) * length,
+    y: beam.origin.y + (dy / mag) * length,
+  };
 }
 
 /**

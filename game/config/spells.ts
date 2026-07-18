@@ -25,16 +25,23 @@ export const emberOrbConfig = {
   castImpulseWindowMs: 120,
 } as const;
 
-/** Lightning is triggered by crossing index-finger beams (pointerBeams.ts). */
+/** Lightning is triggered by cross-hand fingertip beams (pointerBeams.ts). */
 export const lightningConfig = {
-  /** Each finger fires one bolt this often (ms). */
-  firePeriodMs: 1000,
-  /** How long each fired bolt stays visible (ms). */
-  boltLifetimeMs: 1000,
+  /**
+   * Tip→tip grow time when a finger first connects (ms).
+   * After that the arc stays continuously lit — no dark restrike gap.
+   */
+  travelMs: 120,
+  /** Hold one jagged path this long before reshaping it (ms). */
+  pathRefreshMs: 90,
+  /** Brightness shimmer floor (0..1). 1 = rock steady, lower = stormier. */
+  shimmerFloor: 0.66,
 } as const;
 
 export const aegisConfig = {
   activateHoldMs: 200,
   energyDrainPerSecond: 0.15,
   shieldRadius: 80,
+  /** Single palm must be at least this open to raise the shield. */
+  minOpenness: 0.7,
 } as const;

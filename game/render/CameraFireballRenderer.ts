@@ -1,25 +1,15 @@
 /**
- * Transparent PixiJS fireball rendered over the mirrored webcam.
+ * Transparent PixiJS black hole rendered between mirrored webcam palms.
  *
- * The flame is built from soft radial-gradient TEXTURES (drawn once on a
- * 2D canvas) instead of hard-edged vector circles. Feathered alpha edges +
- * additive blending read as real volumetric fire, and sprites scale to any
- * size with no aliasing — so the orb can grow without an upper bound.
- *
- * Layers (back -> front):
- *   1. Wide blurred heat halo
- *   2. Turbulent additive corona tongues
- *   3. Flame body + drifting lobes
- *   4. White-hot core
- *   5. Rising sparks + smoke particles
- *
- * No external image asset needed; textures are generated procedurally.
+ * Layers: gravitational glow → rear accretion disk → black event horizon →
+ * foreground disk/lensing ring → infalling matter. Geometry is procedural.
  */
 
 import {
   Application,
   BlurFilter,
   Container,
+  Graphics,
   Sprite,
   Texture,
 } from "pixi.js";
@@ -30,29 +20,21 @@ export type CameraFireballFrame = {
   palms: readonly [Vec2, Vec2] | null;
 };
 
-type EmberParticle = {
-  sprite: Sprite;
-  kind: "spark" | "smoke";
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  baseSize: number;
-  lifeMs: number;
-  maxLifeMs: number;
-};
-
-type Tongue = {
-  sprite: Sprite;
+type Matter = {
   phase: number;
-  speed: number;
   band: number;
+  speed: number;
+  size: number;
 };
 
-const CORONA_TONGUES = 14;
-const FLAME_LOBES = 7;
+const MATTER_COUNT = 34;
+const ACCRETION_COLORS = [
+  0xff7a3a, // hot orange
+  0xffb15c, // incandescent amber
+  0x8b6cff, // arcane violet
+  0xc5b8ff, // lensing lavender
+];
 
-/** Build a soft round texture from a radial gradient on a 2D canvas. */
 function radialTexture(
   size: number,
   stops: ReadonlyArray<readonly [number, string]>,
@@ -71,9 +53,7 @@ function radialTexture(
     half,
     half,
   );
-  for (const [offset, color] of stops) {
-    gradient.addColorStop(offset, color);
-  }
+  for (const [offset, color] of stops) gradient.addColorStop(offset, color);
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, size, size);
   return Texture.from(canvas);
@@ -81,113 +61,65 @@ function radialTexture(
 
 export class CameraFireballRenderer {
   private readonly app: Application;
-
-  // Shared soft-round textures.
-  private readonly haloTexture: Texture;
-  private readonly flameTexture: Texture;
-  private readonly coreTexture: Texture;
-  private readonly sparkTexture: Texture;
-  private readonly smokeTexture: Texture;
-
-  private readonly fireball = new Container();
-  private readonly glow = new Sprite();
-  private readonly corona = new Container();
-  private readonly flame = new Container();
-  private readonly core = new Sprite();
-  private readonly coreHot = new Sprite();
-  private readonly smoke = new Container();
-  private readonly particles = new Container();
-
-  private readonly tongues: Tongue[] = [];
-  private readonly lobes: Sprite[] = [];
-  private readonly particlePool: EmberParticle[] = [];
+  private readonly root = new Container();
+  private readonly halo = new Sprite();
+  private readonly rearDisk = new Graphics();
+  private readonly horizon = new Graphics();
+  private readonly frontDisk = new Graphics();
+  private readonly lens = new Graphics();
+  private readonly matter = new Graphics();
+  private readonly matterSeeds: Matter[] = [];
 
   private frame: CameraFireballFrame = { palms: null };
   private smoothX = 0;
   private smoothY = 0;
   private smoothIntensity = 0;
   private smoothRadius = 20;
+  private appear = 0;
   private hasPosition = false;
   private lastTimestamp = performance.now();
-  private spawnAccumulator = 0;
-  private smokeAccumulator = 0;
   private rafId = 0;
   private destroyed = false;
 
   private constructor(app: Application) {
     this.app = app;
 
-    this.haloTexture = radialTexture(256, [
-      [0, "rgba(255,180,60,1)"],
-      [0.35, "rgba(255,90,10,0.75)"],
-      [0.7, "rgba(180,30,0,0.25)"],
-      [1, "rgba(120,10,0,0)"],
+    this.halo.texture = radialTexture(256, [
+      [0, "rgba(8,5,20,0)"],
+      [0.18, "rgba(255,106,42,0.08)"],
+      [0.31, "rgba(255,122,58,0.82)"],
+      [0.43, "rgba(177,88,255,0.66)"],
+      [0.58, "rgba(106,91,255,0.26)"],
+      [0.8, "rgba(43,19,105,0.08)"],
+      [1, "rgba(8,5,30,0)"],
     ]);
-    this.flameTexture = radialTexture(256, [
-      [0, "rgba(255,240,180,1)"],
-      [0.28, "rgba(255,160,40,0.95)"],
-      [0.6, "rgba(255,70,10,0.55)"],
-      [1, "rgba(200,30,0,0)"],
-    ]);
-    this.coreTexture = radialTexture(256, [
-      [0, "rgba(255,255,255,1)"],
-      [0.35, "rgba(255,240,170,0.95)"],
-      [0.7, "rgba(255,170,40,0.4)"],
-      [1, "rgba(255,120,0,0)"],
-    ]);
-    this.sparkTexture = radialTexture(64, [
-      [0, "rgba(255,240,200,1)"],
-      [0.5, "rgba(255,150,40,0.9)"],
-      [1, "rgba(255,80,0,0)"],
-    ]);
-    this.smokeTexture = radialTexture(128, [
-      [0, "rgba(40,22,14,0.9)"],
-      [0.6, "rgba(30,16,10,0.4)"],
-      [1, "rgba(20,10,6,0)"],
-    ]);
+    this.halo.anchor.set(0.5);
+    this.halo.blendMode = "add";
+    this.halo.filters = [new BlurFilter({ strength: 12, quality: 3 })];
 
-    this.glow.texture = this.haloTexture;
-    this.core.texture = this.coreTexture;
-    this.coreHot.texture = this.coreTexture;
-    for (const s of [this.glow, this.core, this.coreHot]) {
-      s.anchor.set(0.5);
-      s.blendMode = "add";
+    for (const g of [this.rearDisk, this.frontDisk, this.lens, this.matter]) {
+      g.blendMode = "add";
     }
 
-    // Turbulent corona tongues orbiting the body.
-    for (let i = 0; i < CORONA_TONGUES; i++) {
-      const sprite = new Sprite(this.flameTexture);
-      sprite.anchor.set(0.5);
-      sprite.blendMode = "add";
-      this.corona.addChild(sprite);
-      this.tongues.push({
-        sprite,
-        phase: i * 0.73,
-        speed: 0.0012 + (i % 4) * 0.00016,
-        band: i % 3,
+    for (let i = 0; i < MATTER_COUNT; i++) {
+      this.matterSeeds.push({
+        phase: i * 2.39996,
+        band: (i % 7) / 7,
+        speed: 0.00022 + (i % 6) * 0.000035,
+        size: 1.2 + (i % 4) * 0.65,
       });
     }
 
-    // Drifting flame lobes give the body an organic asymmetric edge.
-    for (let i = 0; i < FLAME_LOBES; i++) {
-      const sprite = new Sprite(this.flameTexture);
-      sprite.anchor.set(0.5);
-      sprite.blendMode = "add";
-      this.flame.addChild(sprite);
-      this.lobes.push(sprite);
-    }
-
-    this.glow.filters = [new BlurFilter({ strength: 14, quality: 3 })];
-    this.smoke.filters = [new BlurFilter({ strength: 6, quality: 2 })];
-
-    this.fireball.addChild(
-      this.glow,
-      this.corona,
-      this.flame,
-      this.core,
-      this.coreHot,
+    this.root.addChild(
+      this.halo,
+      this.rearDisk,
+      this.horizon,
+      this.frontDisk,
+      this.lens,
+      this.matter,
     );
-    this.app.stage.addChild(this.smoke, this.particles, this.fireball);
+    this.app.stage.addChild(this.root);
+    this.root.visible = false;
 
     this.animate = this.animate.bind(this);
     this.rafId = requestAnimationFrame(this.animate);
@@ -201,6 +133,7 @@ export class CameraFireballRenderer {
       antialias: true,
       autoDensity: true,
       resolution: Math.min(window.devicePixelRatio || 1, 2),
+      clearBeforeRender: true,
     });
 
     host.replaceChildren(app.canvas);
@@ -211,14 +144,9 @@ export class CameraFireballRenderer {
       height: "100%",
       pointerEvents: "none",
     });
-
     return new CameraFireballRenderer(app);
   }
 
-  /**
-   * Push newest palm positions from the 25 Hz vision loop.
-   * Rendering continues around 60 Hz and smooths between samples.
-   */
   update(frame: CameraFireballFrame): void {
     this.frame = frame;
   }
@@ -227,42 +155,41 @@ export class CameraFireballRenderer {
     if (this.destroyed) return;
     this.destroyed = true;
     cancelAnimationFrame(this.rafId);
-    for (const particle of this.particlePool) {
-      particle.sprite.destroy();
-    }
-    this.particlePool.length = 0;
     this.app.destroy(true, { children: true });
   }
 
   private animate(timestamp: number): void {
     if (this.destroyed) return;
+    try {
+      this.renderFrame(timestamp);
+    } catch {
+      this.root.visible = false;
+    }
+    this.rafId = requestAnimationFrame(this.animate);
+  }
+
+  private renderFrame(timestamp: number): void {
     const deltaMs = Math.min(50, timestamp - this.lastTimestamp);
     this.lastTimestamp = timestamp;
-
     const palms = this.frame.palms;
-    const isVisible = palms !== null;
+    const targetAppear = palms ? 1 : 0;
+    this.appear +=
+      (targetAppear - this.appear) *
+      Math.min(1, (palms ? 7 : 10) * (deltaMs / 1000));
 
     if (palms) {
-      const [leftPalm, rightPalm] = palms;
-      const ax = (1 - leftPalm.x) * this.app.screen.width;
-      const ay = leftPalm.y * this.app.screen.height;
-      const bx = (1 - rightPalm.x) * this.app.screen.width;
-      const by = rightPalm.y * this.app.screen.height;
+      const [a, b] = palms;
+      const ax = (1 - a.x) * this.app.screen.width;
+      const ay = a.y * this.app.screen.height;
+      const bx = (1 - b.x) * this.app.screen.width;
+      const by = b.y * this.app.screen.height;
       const targetX = (ax + bx) / 2;
       const targetY = (ay + by) / 2;
-
-      // Diameter tracks palm gap with NO upper cap — orb keeps growing.
-      const palmGapPx = Math.hypot(bx - ax, by - ay);
-      const targetRadius = Math.max(14, palmGapPx * 0.26);
-
-      // Intensity only drives particle rate / brightness, so clamp it to a
-      // screen-relative reference even though radius itself is uncapped.
-      const referenceRadius =
-        Math.min(this.app.screen.width, this.app.screen.height) * 0.25;
-      const targetIntensity = Math.min(
-        1,
-        targetRadius / Math.max(referenceRadius, 1),
-      );
+      const gap = Math.hypot(bx - ax, by - ay);
+      const targetRadius = Math.max(18, gap * 0.22);
+      const reference =
+        Math.min(this.app.screen.width, this.app.screen.height) * 0.22;
+      const targetIntensity = Math.min(1, targetRadius / Math.max(reference, 1));
 
       if (!this.hasPosition) {
         this.smoothX = targetX;
@@ -271,173 +198,168 @@ export class CameraFireballRenderer {
         this.smoothIntensity = targetIntensity;
         this.hasPosition = true;
       } else {
-        this.smoothX += (targetX - this.smoothX) * 0.34;
-        this.smoothY += (targetY - this.smoothY) * 0.34;
-        this.smoothRadius += (targetRadius - this.smoothRadius) * 0.24;
+        this.smoothX += (targetX - this.smoothX) * 0.32;
+        this.smoothY += (targetY - this.smoothY) * 0.32;
+        this.smoothRadius += (targetRadius - this.smoothRadius) * 0.2;
         this.smoothIntensity +=
-          (targetIntensity - this.smoothIntensity) * 0.2;
+          (targetIntensity - this.smoothIntensity) * 0.18;
       }
     }
 
-    this.fireball.x = this.smoothX;
-    this.fireball.y = this.smoothY;
-    this.fireball.visible = isVisible;
-
-    if (this.fireball.visible) {
-      this.drawFireball(timestamp);
+    if (this.appear < 0.015) {
+      this.root.visible = false;
+      this.hasPosition = false;
+      return;
     }
 
-    if (isVisible) {
-      this.spawnAccumulator +=
-        (deltaMs / 1000) * (18 + this.smoothIntensity * 42);
-      while (this.spawnAccumulator >= 1) {
-        this.spawnAccumulator -= 1;
-        this.spawnEmber();
-      }
-
-      this.smokeAccumulator +=
-        (deltaMs / 1000) * (3 + this.smoothIntensity * 5);
-      while (this.smokeAccumulator >= 1) {
-        this.smokeAccumulator -= 1;
-        this.spawnSmoke();
-      }
-    }
-
-    this.updateParticles(deltaMs);
-    this.rafId = requestAnimationFrame(this.animate);
+    this.root.visible = true;
+    this.root.x = this.smoothX;
+    this.root.y = this.smoothY;
+    this.root.scale.set(0.65 + this.appear * 0.35);
+    this.root.alpha = Math.min(1, this.appear * 1.25);
+    this.drawBlackHole(timestamp);
   }
 
-  /** Size + animate each soft-sprite layer. */
-  private drawFireball(timestamp: number): void {
-    const radius = this.smoothRadius;
-    const flickerA = 1 + Math.sin(timestamp * 0.021) * 0.05;
-    const flickerB = 1 + Math.sin(timestamp * 0.037 + 1.8) * 0.04;
+  private drawBlackHole(timestamp: number): void {
+    const r = this.smoothRadius;
+    const intensity = 0.65 + this.smoothIntensity * 0.35;
+    const breathe = 1 + Math.sin(timestamp * 0.0024) * 0.025;
+    const eventR = r * 0.72 * breathe;
+    const diskR = r * 1.9;
+    const tilt = 0.3;
+    const rotation = -0.16;
 
-    // Sprite width maps 1:1 to diameter, so width = radius * 2 * factor.
-    const setSize = (s: Sprite, r: number): void => {
-      s.width = r * 2;
-      s.height = r * 2;
-    };
+    this.rearDisk.clear();
+    this.horizon.clear();
+    this.frontDisk.clear();
+    this.lens.clear();
+    this.matter.clear();
 
-    setSize(this.glow, radius * 2.4 * flickerA);
-    this.glow.alpha = 0.5 + this.smoothIntensity * 0.25;
+    this.halo.width = r * 5.8;
+    this.halo.height = r * 5.8;
+    this.halo.alpha = 0.65 * intensity;
+    this.halo.rotation = timestamp * 0.00009;
 
-    // Corona: soft tongues orbiting at varied radius/pulse.
-    for (let i = 0; i < this.tongues.length; i++) {
-      const t = this.tongues[i];
-      const angle = timestamp * t.speed + t.phase;
-      const pulse = 0.82 + Math.sin(timestamp * 0.019 + i * 1.7) * 0.16;
-      const orbit = radius * (0.7 + t.band * 0.1);
-      const size = radius * (0.42 + (i % 4) * 0.07) * pulse;
-      t.sprite.x = Math.cos(angle) * orbit;
-      t.sprite.y = Math.sin(angle) * orbit - size * 0.18;
-      setSize(t.sprite, size);
-      t.sprite.alpha = 0.32 + this.smoothIntensity * 0.14;
+    // Rear accretion stream disappears behind event horizon.
+    for (let i = 0; i < 18; i++) {
+      const start = Math.PI + (i / 18) * Math.PI;
+      const span = 0.08 + (i % 4) * 0.025;
+      const color = ACCRETION_COLORS[i % ACCRETION_COLORS.length];
+      drawEllipseArc(
+        this.rearDisk,
+        diskR * (0.82 + (i % 3) * 0.1),
+        tilt,
+        start + timestamp * (0.00055 + (i % 3) * 0.00008),
+        span,
+        rotation,
+        2 + (i % 3),
+        color,
+        (0.35 + (i % 4) * 0.1) * intensity,
+      );
     }
 
-    // Flame body lobes.
-    for (let i = 0; i < this.lobes.length; i++) {
-      const lobe = this.lobes[i];
-      const angle = timestamp * (0.0007 + i * 0.00008) + i * 0.91;
-      const orbit = radius * (0.14 + (i % 3) * 0.04);
-      const size = radius * (1.35 + Math.sin(timestamp * 0.015 + i) * 0.12);
-      lobe.x = Math.cos(angle) * orbit;
-      lobe.y = Math.sin(angle) * orbit;
-      setSize(lobe, size);
-      lobe.alpha = 0.4;
+    // Absolute black center remains opaque over bright camera footage.
+    this.horizon.circle(0, 0, eventR * 1.05);
+    this.horizon.fill({ color: 0x020207, alpha: 0.96 });
+    this.horizon.circle(0, 0, eventR);
+    this.horizon.fill({ color: 0x000000, alpha: 1 });
+
+    // Foreground stream wraps over lower half: gravitational lens illusion.
+    for (let i = 0; i < 22; i++) {
+      const start = (i / 22) * Math.PI;
+      const span = 0.065 + (i % 5) * 0.018;
+      const color = ACCRETION_COLORS[(i + 1) % ACCRETION_COLORS.length];
+      drawEllipseArc(
+        this.frontDisk,
+        diskR * (0.78 + (i % 4) * 0.085),
+        tilt,
+        start + timestamp * (0.00068 + (i % 4) * 0.00007),
+        span,
+        rotation,
+        2.2 + (i % 3),
+        color,
+        (0.48 + (i % 4) * 0.1) * intensity,
+      );
     }
 
-    // Cores: warm then white-hot, nudged up-left like rising heat.
-    setSize(this.core, radius * 1.25 * flickerB);
-    this.core.x = -radius * 0.08;
-    this.core.y = -radius * 0.1;
-    this.core.alpha = 0.9;
-
-    setSize(this.coreHot, radius * 0.6 * flickerA);
-    this.coreHot.x = -radius * 0.14;
-    this.coreHot.y = -radius * 0.18;
-    this.coreHot.alpha = 0.95;
-  }
-
-  /** Spawn one hot speck near fireball, drifting upward/outward. */
-  private spawnEmber(): void {
-    const angle = Math.random() * Math.PI * 2;
-    const distance = this.smoothRadius * (0.35 + Math.random() * 0.75);
-    const lifeMs = 320 + Math.random() * 460;
-    const baseSize = 2 + Math.random() * 4;
-    const sprite = new Sprite(this.sparkTexture);
-    sprite.anchor.set(0.5);
-    sprite.blendMode = "add";
-    sprite.width = baseSize;
-    sprite.height = baseSize;
-    this.particles.addChild(sprite);
-
-    this.particlePool.push({
-      sprite,
-      kind: "spark",
-      x: this.smoothX + Math.cos(angle) * distance,
-      y: this.smoothY + Math.sin(angle) * distance,
-      vx: Math.cos(angle) * (12 + Math.random() * 24),
-      vy: -28 - Math.random() * 55,
-      baseSize,
-      lifeMs,
-      maxLifeMs: lifeMs,
+    // Event horizon: razor-hot orange photon ring, then violet lensing bands.
+    // Multiple thin rings produce chromatic gravitational distortion without
+    // softening the absolute-black center.
+    this.lens.circle(0, 0, eventR * 1.075);
+    this.lens.stroke({
+      width: Math.max(2.2, r * 0.065),
+      color: 0xff7a3a,
+      alpha: 0.98 * intensity,
     });
-  }
-
-  /** Soft dark smoke gives flame volume against bright camera scenes. */
-  private spawnSmoke(): void {
-    const angle = Math.random() * Math.PI * 2;
-    const baseSize = this.smoothRadius * (0.5 + Math.random() * 0.5);
-    const sprite = new Sprite(this.smokeTexture);
-    sprite.anchor.set(0.5);
-    sprite.width = baseSize;
-    sprite.height = baseSize;
-    this.smoke.addChild(sprite);
-
-    const lifeMs = 700 + Math.random() * 650;
-    this.particlePool.push({
-      sprite,
-      kind: "smoke",
-      x: this.smoothX + Math.cos(angle) * this.smoothRadius * 0.45,
-      y: this.smoothY + Math.sin(angle) * this.smoothRadius * 0.3,
-      vx: Math.cos(angle) * (5 + Math.random() * 9),
-      vy: -13 - Math.random() * 24,
-      baseSize,
-      lifeMs,
-      maxLifeMs: lifeMs,
+    this.lens.circle(0, 0, eventR * 1.13);
+    this.lens.stroke({
+      width: Math.max(1.2, r * 0.032),
+      color: 0xffb15c,
+      alpha: 0.72 * intensity,
     });
-  }
+    this.lens.circle(0, 0, eventR * 1.22);
+    this.lens.stroke({
+      width: Math.max(1.4, r * 0.038),
+      color: 0x8b6cff,
+      alpha: 0.68 * intensity,
+    });
+    this.lens.circle(0, 0, eventR * 1.38);
+    this.lens.stroke({
+      width: Math.max(0.8, r * 0.018),
+      color: 0xc5b8ff,
+      alpha: 0.3 * intensity,
+    });
 
-  private updateParticles(deltaMs: number): void {
-    const seconds = deltaMs / 1000;
-    for (let i = this.particlePool.length - 1; i >= 0; i--) {
-      const particle = this.particlePool[i];
-      particle.lifeMs -= deltaMs;
-      if (particle.lifeMs <= 0) {
-        particle.sprite.removeFromParent();
-        particle.sprite.destroy();
-        this.particlePool.splice(i, 1);
-        continue;
-      }
+    // Matter spirals inward. Short trailing strokes show pull direction.
+    for (let i = 0; i < this.matterSeeds.length; i++) {
+      const seed = this.matterSeeds[i];
+      const cycle = ((timestamp * seed.speed + seed.band) % 1 + 1) % 1;
+      const radial = eventR * (1.2 + (1 - cycle) * 1.85);
+      const angle = seed.phase + timestamp * seed.speed * 7 + cycle * 7;
+      const x = Math.cos(angle) * radial;
+      const y = Math.sin(angle) * radial * 0.68;
+      const prevAngle = angle - 0.08;
+      const prevR = radial + eventR * 0.08;
+      const px = Math.cos(prevAngle) * prevR;
+      const py = Math.sin(prevAngle) * prevR * 0.68;
+      const color = ACCRETION_COLORS[i % ACCRETION_COLORS.length];
+      const alpha = Math.min(1, cycle * 3) * (1 - cycle * 0.35);
 
-      particle.x += particle.vx * seconds;
-      particle.y += particle.vy * seconds;
-      particle.vy -= 12 * seconds;
-      particle.sprite.x = particle.x;
-      particle.sprite.y = particle.y;
-      const lifeRatio = particle.lifeMs / particle.maxLifeMs;
-      if (particle.kind === "smoke") {
-        particle.sprite.alpha = lifeRatio * 0.22;
-        const scale = 1 + (1 - lifeRatio) * 1.8;
-        particle.sprite.width = particle.baseSize * scale;
-        particle.sprite.height = particle.baseSize * scale;
-      } else {
-        particle.sprite.alpha = lifeRatio;
-        const scale = 0.35 + 0.65 * lifeRatio;
-        particle.sprite.width = particle.baseSize * scale;
-        particle.sprite.height = particle.baseSize * scale;
-      }
+      this.matter.moveTo(px, py);
+      this.matter.lineTo(x, y);
+      this.matter.stroke({
+        width: seed.size,
+        color,
+        alpha: alpha * 0.7 * intensity,
+        cap: "round",
+      });
+      this.matter.circle(x, y, seed.size * 0.7);
+      this.matter.fill({ color, alpha: alpha * intensity });
     }
   }
+}
+
+/** Draw a rotated elliptical arc with line segments. */
+function drawEllipseArc(
+  g: Graphics,
+  radius: number,
+  squash: number,
+  start: number,
+  span: number,
+  rotation: number,
+  width: number,
+  color: number,
+  alpha: number,
+): void {
+  const steps = 5;
+  for (let i = 0; i <= steps; i++) {
+    const angle = start + (span * i) / steps;
+    const ex = Math.cos(angle) * radius;
+    const ey = Math.sin(angle) * radius * squash;
+    const x = ex * Math.cos(rotation) - ey * Math.sin(rotation);
+    const y = ex * Math.sin(rotation) + ey * Math.cos(rotation);
+    if (i === 0) g.moveTo(x, y);
+    else g.lineTo(x, y);
+  }
+  g.stroke({ width, color, alpha, cap: "round" });
 }

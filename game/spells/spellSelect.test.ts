@@ -31,11 +31,43 @@ function features(
 }
 
 describe("selectSpell", () => {
-  it("returns null with fewer than two hands", () => {
+  it("aegis with one open palm toward camera", () => {
     expect(
       selectSpell({
-        features: features([0.9], 1.5),
-        stack: "vertical",
+        features: features([0.9], null),
+        stack: null,
+        beamsOverlap: false,
+      }),
+    ).toBe("aegis");
+  });
+
+  it("no aegis when the single hand is closed", () => {
+    expect(
+      selectSpell({
+        features: features([0.3], null),
+        stack: null,
+        beamsOverlap: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("no aegis when palm faces away", () => {
+    const f = features([0.9], null);
+    f.hands[0] = { ...f.hands[0], palmFacing: "away" };
+    expect(
+      selectSpell({
+        features: f,
+        stack: null,
+        beamsOverlap: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null with zero hands", () => {
+    expect(
+      selectSpell({
+        features: features([], null),
+        stack: null,
         beamsOverlap: false,
       }),
     ).toBeNull();
