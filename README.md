@@ -6,7 +6,7 @@ Browser spell sandbox where webcam-tracked hand geometry creates, charges, aims,
 
 ## Status
 
-**Stage 1 — Project setup.** Landing page and folder scaffold are in place. Vision pipeline and gameplay come next.
+**Stage 2 — Vision foundation.** Local MediaPipe hand landmarks + mirrored debug overlay on `/sandbox`.
 
 ## Stack
 
