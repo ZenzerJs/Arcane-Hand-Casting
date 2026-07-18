@@ -14,7 +14,7 @@ export function CameraPermission({ status, errorMessage, onEnable }: Props) {
   const busy = status === "requesting";
 
   return (
-    <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/70 p-6 text-center">
+    <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-6 text-center">
       <div className="max-w-sm space-y-4">
         <h2 className="text-xl font-semibold text-foreground">Enable camera</h2>
         <p className="text-sm text-foreground/70">

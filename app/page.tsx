@@ -16,10 +16,16 @@ export default function HomePage() {
 
       <div className="flex flex-wrap gap-3">
         <Link
-          href="/sandbox"
+          href="/arena"
           className="rounded-md bg-ember px-5 py-3 text-sm font-medium text-black transition hover:brightness-110"
         >
-          Enter Spell Sandbox
+          Open Ember Lens
+        </Link>
+        <Link
+          href="/sandbox"
+          className="rounded-md border border-foreground/20 px-5 py-3 text-sm text-foreground/90 transition hover:border-foreground/40"
+        >
+          Vision Sandbox
         </Link>
         <a
           href="#privacy"
@@ -37,7 +43,9 @@ export default function HomePage() {
         </p>
       </section>
 
-      <p className="text-xs text-foreground/40">Stage 1 scaffold — vision and gameplay come next.</p>
+      <p className="text-xs text-foreground/40">
+        Stage 5 Ember live — fire forms directly between your palms.
+      </p>
     </main>
   );
 }

@@ -3,15 +3,18 @@
 import { useEffect, useRef, useState } from "react";
 import { CameraPermission } from "@/components/CameraPermission";
 import { CameraManager, type CameraStatus } from "@/vision/camera";
-import {
-  computePalmDistance,
-  drawDebugOverlay,
-} from "@/vision/drawDebugOverlay";
+import { drawDebugOverlay } from "@/vision/drawDebugOverlay";
+import { FeatureExtractor, type HandFeatures } from "@/vision/features";
 import { HandLandmarkerService } from "@/vision/handLandmarker";
 import { LandmarkSmoother } from "@/vision/landmarkSmoother";
+import {
+  assessTrackingQuality,
+  qualityMessage,
+  type TrackingQuality,
+} from "@/vision/quality";
 import type { VisionFrame } from "@/vision/types";
 
-const VISION_INTERVAL_MS = 40; // ~25 Hz inference
+const VISION_INTERVAL_MS = 1000 / 60; // ~60 Hz inference
 
 export function VisionSandbox() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -19,11 +22,15 @@ export function VisionSandbox() {
   const cameraRef = useRef(new CameraManager());
   const landmarkerRef = useRef<HandLandmarkerService | null>(null);
   const smootherRef = useRef(new LandmarkSmoother(0.55));
+  // Owns ~300 ms of history needed for velocity and stability.
+  const featureExtractorRef = useRef(new FeatureExtractor());
   const lastFrameRef = useRef<VisionFrame | null>(null);
   const lastVisionAtRef = useRef(0);
   const visionFpsRef = useRef(0);
   const renderFpsRef = useRef(0);
   const inferMsRef = useRef(0);
+  const featuresRef = useRef<HandFeatures | null>(null);
+  const qualityRef = useRef<TrackingQuality>("NO_HANDS");
   const rafRef = useRef(0);
 
   const [status, setStatus] = useState<CameraStatus>("idle");
@@ -31,6 +38,9 @@ export function VisionSandbox() {
   const [modelReady, setModelReady] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
   const [handCount, setHandCount] = useState(0);
+  const [facingLabel, setFacingLabel] = useState("—");
+  const [featureLabel, setFeatureLabel] = useState("—");
+  const [quality, setQuality] = useState<TrackingQuality>("NO_HANDS");
 
   useEffect(() => {
     let cancelled = false;
@@ -60,6 +70,7 @@ export function VisionSandbox() {
     return () => {
       cancelAnimationFrame(rafRef.current);
       camera.stop();
+      featureExtractorRef.current.reset();
     };
   }, []);
 
@@ -108,8 +119,36 @@ export function VisionSandbox() {
             const raw = landmarker.detect(video, now);
             inferMsRef.current = raw.inferenceMs;
             const smoothed = smootherRef.current.apply(raw);
+            // Stage 3: geometry + short history become spell-ready signals.
+            const features = featureExtractorRef.current.extract(smoothed);
+            // Sandbox targets Ember first, so quality currently requires 2 hands.
+            const nextQuality = assessTrackingQuality(smoothed, features, {
+              requiredHands: 2,
+            });
             lastFrameRef.current = smoothed;
+            featuresRef.current = features;
+            qualityRef.current = nextQuality;
             setHandCount(smoothed.hands.length);
+            setQuality(nextQuality);
+            setFacingLabel(
+              smoothed.hands.length === 0
+                ? "—"
+                : smoothed.hands
+                    .map((h) => `${h.id}:${h.palmFacing}`)
+                    .join(" · "),
+            );
+            setFeatureLabel(
+              features.handCount === 0
+                ? "—"
+                : `open ${features.meanOpenness.toFixed(2)} · dist ${
+                    features.palmDistance === null
+                      ? "—"
+                      : features.palmDistance.toFixed(2)
+                  } · speed ${meanFeature(features, "speed")} · fwd ${meanFeature(
+                    features,
+                    "forwardVelocity",
+                  )} · stable ${meanStability(features)}`,
+            );
           } catch {
             // Skip bad frames (e.g. timestamp edge cases)
           }
@@ -122,7 +161,8 @@ export function VisionSandbox() {
             renderFps: renderFpsRef.current,
             visionFps: visionFpsRef.current,
             inferenceMs: inferMsRef.current,
-            palmDistance: computePalmDistance(frame.hands),
+            features: featuresRef.current,
+            quality: qualityRef.current,
           });
         }
       }
@@ -170,8 +210,37 @@ export function VisionSandbox() {
         <span>camera: {status}</span>
         <span>model: {modelReady ? "ready" : modelError ? "error" : "loading"}</span>
         <span>hands: {handCount}</span>
+        <span>facing: {facingLabel}</span>
+        <span>features: {featureLabel}</span>
+        <span>quality: {quality} — {qualityMessage(quality)}</span>
         <span>mirror: on</span>
       </div>
     </div>
   );
+}
+
+/**
+ * Average one numeric per-hand feature for compact debug text.
+ * Empty frames use an em dash instead of pretending the value is zero.
+ */
+function meanFeature(
+  features: HandFeatures,
+  key: "speed" | "forwardVelocity",
+): string {
+  if (features.hands.length === 0) return "—";
+  const mean =
+    features.hands.reduce((sum, hand) => sum + hand[key], 0) /
+    features.hands.length;
+  return mean.toFixed(2);
+}
+
+/** Average available stability values; early frames show — until history fills. */
+function meanStability(features: HandFeatures): string {
+  const values = features.hands
+    .map((hand) => hand.stability)
+    .filter((value): value is number => value !== null);
+  if (values.length === 0) return "—";
+  return (
+    values.reduce((sum, value) => sum + value, 0) / values.length
+  ).toFixed(2);
 }

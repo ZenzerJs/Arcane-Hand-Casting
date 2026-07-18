@@ -1,12 +1,16 @@
 import { HAND_CONNECTIONS } from "./handConnections";
-import { distance } from "./normalize";
+import type { HandFeatures } from "./features";
+import type { TrackingQuality } from "./quality";
 import type { HandFrame, VisionFrame } from "./types";
 
 export type DebugMetrics = {
   renderFps: number;
   visionFps: number;
   inferenceMs: number;
-  palmDistance: number | null;
+  /** Stage 3 engineered features (palm dist, openness, …). */
+  features: HandFeatures | null;
+  /** User-facing result of Stage 3 quality gates. */
+  quality: TrackingQuality;
 };
 
 /**
@@ -73,21 +77,31 @@ function drawHand(
   ctx.arc(palm.x, palm.y, 5, 0, Math.PI * 2);
   ctx.fill();
 
-  // Index direction ray (PIP 6 → tip 8)
-  const pip = toScreen(hand.landmarks[6].x, hand.landmarks[6].y, width, height);
-  const tip = toScreen(hand.indexTip.x, hand.indexTip.y, width, height);
-  const dx = tip.x - pip.x;
-  const dy = tip.y - pip.y;
-  ctx.strokeStyle = "#e8eefc";
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.moveTo(tip.x, tip.y);
-  ctx.lineTo(tip.x + dx * 1.4, tip.y + dy * 1.4);
-  ctx.stroke();
-
   ctx.fillStyle = color;
   ctx.font = "12px monospace";
-  ctx.fillText(`${hand.id} ${(hand.confidence * 100).toFixed(0)}%`, palm.x + 8, palm.y - 8);
+  ctx.fillText(
+    `${hand.id} ${(hand.confidence * 100).toFixed(0)}% ${hand.palmFacing}`,
+    palm.x + 8,
+    palm.y - 8,
+  );
+
+  // Short normal tick: toward = into scene (up on label), away = opposite feel.
+  const facingColor =
+    hand.palmFacing === "toward"
+      ? "#7dff9a"
+      : hand.palmFacing === "away"
+        ? "#ff6b6b"
+        : "#ffd36b";
+  ctx.strokeStyle = facingColor;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(palm.x, palm.y);
+  ctx.lineTo(palm.x, palm.y + (hand.palmFacing === "toward" ? -18 : hand.palmFacing === "away" ? 18 : 0));
+  if (hand.palmFacing === "side") {
+    ctx.moveTo(palm.x - 10, palm.y);
+    ctx.lineTo(palm.x + 10, palm.y);
+  }
+  ctx.stroke();
 }
 
 function drawHud(
@@ -95,26 +109,57 @@ function drawHud(
   frame: VisionFrame,
   metrics: DebugMetrics,
 ): void {
+  const facing =
+    frame.hands.length === 0
+      ? "—"
+      : frame.hands.map((h) => `${h.id[0]}:${h.palmFacing}`).join(" ");
+
+  const features = metrics.features;
+  const openness =
+    !features || features.hands.length === 0
+      ? "—"
+      : features.hands.map((h) => `${h.id[0]}:${h.openness.toFixed(2)}`).join(" ");
+  const motion =
+    !features || features.hands.length === 0
+      ? "—"
+      : features.hands
+          .map(
+            (hand) =>
+              `${hand.id[0]}:v${hand.speed.toFixed(1)}` +
+              `/f${hand.forwardVelocity.toFixed(1)}`,
+          )
+          .join(" ");
+  const stability =
+    !features || features.hands.length === 0
+      ? "—"
+      : features.hands
+          .map((hand) =>
+            `${hand.id[0]}:${
+              hand.stability === null ? "—" : hand.stability.toFixed(2)
+            }`,
+          )
+          .join(" ");
+
   const lines = [
+    `quality: ${metrics.quality}`,
     `hands: ${frame.hands.length}`,
+    `facing: ${facing}`,
+    `open: ${openness}`,
+    `motion: ${motion}`,
+    `stable: ${stability}`,
     `render: ${metrics.renderFps.toFixed(0)} fps`,
     `vision: ${metrics.visionFps.toFixed(0)} fps`,
     `infer: ${metrics.inferenceMs.toFixed(1)} ms`,
     `palmDist: ${
-      metrics.palmDistance === null ? "—" : metrics.palmDistance.toFixed(3)
+      features?.palmDistance == null ? "—" : features.palmDistance.toFixed(3)
     }`,
   ];
 
   ctx.fillStyle = "rgba(0,0,0,0.55)";
-  ctx.fillRect(8, 8, 168, 18 + lines.length * 16);
+  ctx.fillRect(8, 8, 250, 18 + lines.length * 16);
   ctx.fillStyle = "#e8eefc";
   ctx.font = "12px monospace";
   lines.forEach((line, i) => {
     ctx.fillText(line, 16, 28 + i * 16);
   });
-}
-
-export function computePalmDistance(hands: HandFrame[]): number | null {
-  if (hands.length < 2) return null;
-  return distance(hands[0].palmCenter, hands[1].palmCenter);
 }

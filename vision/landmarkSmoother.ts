@@ -1,8 +1,9 @@
-import { emaVec2 } from "./smoothing";
-import type { HandFrame, HandId, Vec2, VisionFrame } from "./types";
+import { estimatePalmFacing } from "./palmFacing";
+import { emaVec3 } from "./smoothing";
+import type { HandFrame, HandId, Vec2, Vec3, VisionFrame } from "./types";
 
 type HandHistory = {
-  landmarks: Vec2[];
+  landmarks: Vec3[];
 };
 
 /**
@@ -33,30 +34,33 @@ export class LandmarkSmoother {
     }
 
     const landmarks = hand.landmarks.map((point, i) =>
-      emaVec2(point, prev.landmarks[i], this.alpha),
+      emaVec3(point, prev.landmarks[i], this.alpha),
     );
     this.history.set(hand.id, { landmarks });
 
     const wrist = landmarks[0];
-    const palmCenter = mean([
+    const palm = mean([
       landmarks[0],
       landmarks[5],
       landmarks[9],
       landmarks[13],
       landmarks[17],
     ]);
+    const { facing, towardScore } = estimatePalmFacing(landmarks, hand.id);
 
     return {
       ...hand,
       landmarks,
-      wrist,
-      palmCenter,
-      indexTip: landmarks[8],
+      wrist: { x: wrist.x, y: wrist.y },
+      palmCenter: palm,
+      indexTip: { x: landmarks[8].x, y: landmarks[8].y },
+      palmFacing: facing,
+      palmTowardScore: towardScore,
     };
   }
 }
 
-function mean(points: Vec2[]): Vec2 {
+function mean(points: Vec3[]): Vec2 {
   const sum = points.reduce((acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y }), {
     x: 0,
     y: 0,
