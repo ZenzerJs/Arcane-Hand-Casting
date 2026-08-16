@@ -25,6 +25,8 @@ export const trialConfig = {
   wispSpeed: 0.05,
   /** Distance from a lightning segment that counts as a hit. */
   arcHitWidth: 0.02,
+  /** Distance from a laser beam that counts as a hit. */
+  laserHitWidth: 0.02,
   /** Void pull reaches this many core radii out. */
   voidPullReach: 2.1,
   /** Wisps inside this fraction of core radius are consumed. */
@@ -84,14 +86,16 @@ export type TrialInput = {
   voidRadius: number;
   /** Live tip↔tip lightning segments (arcs only, not flickers). */
   arcs: ReadonlyArray<{ from: Vec2; to: Vec2 }>;
-  /** Aegis ward disc or null. */
-  aegis: { center: Vec2; radius: number } | null;
-  /** Ember Grasp fist (normalized) or null. */
-  ember: { center: Vec2; radius: number } | null;
+  /** Aegis ward discs (one per raised palm; empty = none). */
+  aegis: ReadonlyArray<{ center: Vec2; radius: number }>;
+  /** Ember Grasp fists (one per closed fist; empty = none). */
+  ember: ReadonlyArray<{ center: Vec2; radius: number }>;
+  /** Arcane Laser beams (one per gun hand; empty = none). */
+  laser: ReadonlyArray<{ from: Vec2; to: Vec2 }>;
 };
 
 export type TrialEvent =
-  | { kind: "wispKilled"; pos: Vec2; by: "arc" | "void" | "ember" }
+  | { kind: "wispKilled"; pos: Vec2; by: "arc" | "void" | "ember" | "laser" }
   | { kind: "hazardBlocked"; pos: Vec2 }
   | { kind: "lifeLost"; pos: Vec2 }
   | { kind: "waveCleared"; wave: number }
@@ -242,13 +246,13 @@ function killWisps(
       }
     }
 
-    // Incinerated by the ember grasp.
-    if (input.ember) {
+    // Incinerated by any ember grasp.
+    for (const ember of input.ember) {
       const d = Math.hypot(
-        wisp.pos.x - input.ember.center.x,
-        wisp.pos.y - input.ember.center.y,
+        wisp.pos.x - ember.center.x,
+        wisp.pos.y - ember.center.y,
       );
-      if (d < input.ember.radius * trialConfig.emberEatFraction + wisp.radius) {
+      if (d < ember.radius * trialConfig.emberEatFraction + wisp.radius) {
         state.score += trialConfig.scorePerWisp;
         events.push({ kind: "wispKilled", pos: { ...wisp.pos }, by: "ember" });
         return false;
@@ -261,6 +265,20 @@ function killWisps(
       if (d < wisp.radius + trialConfig.arcHitWidth) {
         state.score += trialConfig.scorePerWisp;
         events.push({ kind: "wispKilled", pos: { ...wisp.pos }, by: "arc" });
+        return false;
+      }
+    }
+
+    // Zapped by an arcane laser beam.
+    for (const laser of input.laser) {
+      const d = pointSegmentDistance(wisp.pos, laser.from, laser.to);
+      if (d < wisp.radius + trialConfig.laserHitWidth) {
+        state.score += trialConfig.scorePerWisp;
+        events.push({
+          kind: "wispKilled",
+          pos: { ...wisp.pos },
+          by: "laser",
+        });
         return false;
       }
     }
@@ -279,13 +297,13 @@ function stepHazards(
     hazard.pos.x += hazard.vel.x * dt;
     hazard.pos.y += hazard.vel.y * dt;
 
-    // Blocked by the ward.
-    if (input.aegis) {
+    // Blocked by any ward.
+    for (const aegis of input.aegis) {
       const d = Math.hypot(
-        hazard.pos.x - input.aegis.center.x,
-        hazard.pos.y - input.aegis.center.y,
+        hazard.pos.x - aegis.center.x,
+        hazard.pos.y - aegis.center.y,
       );
-      if (d < input.aegis.radius + hazard.radius) {
+      if (d < aegis.radius + hazard.radius) {
         state.score += trialConfig.scorePerBlock;
         events.push({ kind: "hazardBlocked", pos: { ...hazard.pos } });
         return false;

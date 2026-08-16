@@ -18,8 +18,9 @@ const idleInput: TrialInput = {
   voidCenter: null,
   voidRadius: 0,
   arcs: [],
-  aegis: null,
-  ember: null,
+  aegis: [],
+  ember: [],
+  laser: [],
 };
 
 describe("startTrial", () => {
@@ -85,11 +86,45 @@ describe("stepTrial", () => {
     const wisp = state.wisps[0];
     const input: TrialInput = {
       ...idleInput,
-      ember: { center: { ...wisp.pos }, radius: 0.1 },
+      ember: [{ center: { ...wisp.pos }, radius: 0.1 }],
     };
     const events = stepTrial(state, input, 16, 16);
     expect(
       events.some((e) => e.kind === "wispKilled" && e.by === "ember"),
+    ).toBe(true);
+  });
+
+  it("incinerates a wisp inside the second of two embers", () => {
+    const state = startTrial(createTrial(), 0, fixedRng([0.5]));
+    const wisp = state.wisps[0];
+    const input: TrialInput = {
+      ...idleInput,
+      ember: [
+        { center: { x: 0.02, y: 0.02 }, radius: 0.1 },
+        { center: { ...wisp.pos }, radius: 0.1 },
+      ],
+    };
+    const events = stepTrial(state, input, 16, 16);
+    expect(
+      events.some((e) => e.kind === "wispKilled" && e.by === "ember"),
+    ).toBe(true);
+  });
+
+  it("zaps a wisp crossed by an arcane laser beam", () => {
+    const state = startTrial(createTrial(), 0, fixedRng([0.5]));
+    const wisp = state.wisps[0];
+    const input: TrialInput = {
+      ...idleInput,
+      laser: [
+        {
+          from: { x: wisp.pos.x - 0.3, y: wisp.pos.y },
+          to: { x: wisp.pos.x + 0.3, y: wisp.pos.y },
+        },
+      ],
+    };
+    const events = stepTrial(state, input, 16, 16);
+    expect(
+      events.some((e) => e.kind === "wispKilled" && e.by === "laser"),
     ).toBe(true);
   });
 
@@ -120,7 +155,30 @@ describe("stepTrial", () => {
     });
     const input: TrialInput = {
       ...idleInput,
-      aegis: { center: { x: 0.5, y: 0.42 }, radius: 0.08 },
+      aegis: [{ center: { x: 0.5, y: 0.42 }, radius: 0.08 }],
+    };
+    const events = stepTrial(state, input, 16, 16);
+    expect(events.some((e) => e.kind === "hazardBlocked")).toBe(true);
+    expect(state.hazards).toHaveLength(0);
+    expect(state.score).toBe(trialConfig.scorePerBlock);
+  });
+
+  it("blocks a hazard with the second of two wards", () => {
+    const state = startTrial(createTrial(), 0, fixedRng([0.5]));
+    state.wisps = [];
+    state.waveBreakUntilMs = Number.MAX_SAFE_INTEGER;
+    state.hazards.push({
+      id: 99,
+      pos: { x: 0.5, y: 0.4 },
+      vel: { x: 0, y: trialConfig.hazardSpeed },
+      radius: trialConfig.hazardRadius,
+    });
+    const input: TrialInput = {
+      ...idleInput,
+      aegis: [
+        { center: { x: 0.02, y: 0.02 }, radius: 0.08 },
+        { center: { x: 0.5, y: 0.42 }, radius: 0.08 },
+      ],
     };
     const events = stepTrial(state, input, 16, 16);
     expect(events.some((e) => e.kind === "hazardBlocked")).toBe(true);

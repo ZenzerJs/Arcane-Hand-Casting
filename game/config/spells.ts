@@ -2,13 +2,12 @@
 
 export const emberOrbConfig = {
   minPalmDistancePalmWidths: 0.8,
-  /** Both hands must be at least this open to fire the singularity. */
-  minOpenness: 0.65,
 } as const;
 
 /**
- * Lightning (Storm Weave) — hands side by side with fingers spread.
- * Triggered by horizontal stack + open hands; arcs draw tip↔tip regardless.
+ * Lightning (Storm Weave) — hands side by side, palms facing one another,
+ * fingers spread. Triggered by the "lightning" hand sign (see signMatching)
+ * on both hands; arcs draw tip↔tip regardless.
  */
 export const lightningConfig = {
   /**
@@ -20,8 +19,6 @@ export const lightningConfig = {
   pathRefreshMs: 90,
   /** Brightness shimmer floor (0..1). 1 = rock steady, lower = stormier. */
   shimmerFloor: 0.66,
-  /** Both hands must be at least this open to fire arcs. */
-  minOpenness: 0.6,
 } as const;
 
 export const aegisConfig = {
@@ -30,6 +27,15 @@ export const aegisConfig = {
   shieldRadius: 80,
   /** Single palm must be at least this open to raise the shield. */
   minOpenness: 0.7,
+} as const;
+
+/**
+ * Arcane Laser — a gun hand (index out, thumb up) fires a beam from the
+ * fingertip along the pointing direction.
+ */
+export const laserConfig = {
+  /** How wide (normalized) the beam reads for trial wisp hits. */
+  hitWidth: 0.02,
 } as const;
 
 /**

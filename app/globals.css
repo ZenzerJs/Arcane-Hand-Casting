@@ -8,6 +8,7 @@
   --aegis: #3de0d0;
   --rune: #8b6cff;
   --storm: #aab6ff;
+  --laser: #ff5ce1;
 }
 
 @theme inline {
@@ -18,6 +19,7 @@
   --color-aegis: var(--aegis);
   --color-rune: var(--rune);
   --color-storm: var(--storm);
+  --color-laser: var(--laser);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
   --font-display: var(--font-cinzel);

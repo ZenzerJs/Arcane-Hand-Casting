@@ -33,6 +33,8 @@ const BRANCH_COLOR = 0xaab6ff;
 const MAX_BOLTS = 5;
 const MIN_SPAN_PX = 28;
 const FLICKER_MIN_SPAN_PX = 12;
+/** How long the last arcs stay lit (fading) after bolts drop out. */
+const FADE_MS = 140;
 
 export class LightningRenderer {
   private readonly app: Application;
@@ -44,6 +46,9 @@ export class LightningRenderer {
   private readonly branchBlur = new BlurFilter({ strength: 2, quality: 2 });
 
   private frame: LightningFrame = { bolts: [] };
+  /** Last non-empty bolt set, kept for a short fade-out after the spell drops. */
+  private lastBolts: readonly LightningBolt[] = [];
+  private boltsEndedAt: number | null = null;
   /** When each finger slot connected; null while that finger is dark. */
   private slotConnectedAt: Array<number | null> = [
     null,
@@ -151,14 +156,35 @@ export class LightningRenderer {
   }
 
   private renderFrame(timestamp: number): void {
-    const bolts = this.frame.bolts
+    const travel = lightningConfig.travelMs;
+    const incoming = this.frame.bolts
       .slice(0, MAX_BOLTS)
       .filter(isBoltShape);
-    const travel = lightningConfig.travelMs;
 
     this.clearDraw();
 
-    if (bolts.length === 0) {
+    // When bolts drop out, keep the last arcs lit for a short fade instead of
+    // snapping off — a single jittery frame must not restart the grow-in.
+    let bolts: readonly LightningBolt[] = incoming;
+    let fade = 1;
+    if (bolts.length > 0) {
+      this.lastBolts = bolts;
+      this.boltsEndedAt = null;
+    } else if (this.lastBolts.length > 0) {
+      const endedAt = this.boltsEndedAt ?? timestamp;
+      this.boltsEndedAt = endedAt;
+      const elapsed = timestamp - endedAt;
+      if (elapsed < FADE_MS) {
+        bolts = this.lastBolts;
+        fade = 1 - elapsed / FADE_MS;
+      } else {
+        this.lastBolts = [];
+        this.boltsEndedAt = null;
+        this.slotConnectedAt.fill(null);
+        this.group.visible = false;
+        return;
+      }
+    } else {
       this.slotConnectedAt.fill(null);
       this.group.visible = false;
       return;
@@ -236,7 +262,8 @@ export class LightningRenderer {
         };
       }
 
-      const alpha = bolt.kind === "flicker" ? shimmer * 0.5 : shimmer;
+      const alpha =
+        (bolt.kind === "flicker" ? shimmer * 0.5 : shimmer) * fade;
       this.drawArc(a0.x, a0.y, b0.x, b0.y, alpha, progress, bolt.kind);
     }
 

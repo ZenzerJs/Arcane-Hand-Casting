@@ -2,7 +2,10 @@
  * Transparent PixiJS layer for Ember Grasp — a molten ember that coalesces
  * around a closed fist and burns nearby trial wisps.
  *
- * Position/radius are EMA-smoothed so the ember glides with the fist.
+ * Position/radius are EMA-smoothed per fist so each ember glides with its
+ * fist. The renderer tracks up to two fists (one per hand) so the player can
+ * double-cast two embers, or an ember alongside a ward on the other hand.
+ *
  * Coordinates arrive camera-normalized (0..1); renderer mirrors x for selfie.
  */
 
@@ -16,18 +19,30 @@ import {
 } from "pixi.js";
 import type { Vec2 } from "@/vision/types";
 import { coverViewport } from "@/vision/viewport";
+import { drawSparks, stepSparks, type Spark } from "./particles";
 
-export type EmberFistFrame = {
-  /** Fist (palm center, camera-normalized) or null when the ember is down. */
-  fist: Vec2 | null;
+export type EmberFist = {
+  /** Stable key so a fist's smoothing follows the same hand across frames. */
+  key: string;
+  /** Fist (palm center, camera-normalized). */
+  fist: Vec2;
   /** Palm width (camera-normalized) — scales the ember. */
   palmWidth: number;
+};
+
+export type EmberFistFrame = {
+  /** Active fists this frame (0–2). */
+  fists: EmberFist[];
 };
 
 const CORE_COLOR = 0xffd1a8;
 const GLOW_COLOR = 0xff7a3a;
 const SPARK_COLOR = 0xffb15c;
 const SPARK_COUNT = 12;
+const MAX_EMBERS = 80;
+const EMBERS_PER_FRAME = 2;
+const EMBER_SPAWN_MS = 33;
+const EMBER_LIFE_MS = 650;
 
 function radialTexture(
   size: number,
@@ -53,19 +68,29 @@ function radialTexture(
   return Texture.from(canvas);
 }
 
+type FistState = {
+  key: string;
+  root: Container;
+  glow: Sprite;
+  core: Graphics;
+  sparks: Graphics;
+  embers: Graphics;
+  particles: Spark[];
+  lastSpawnMs: number;
+  target: EmberFist | null;
+  smoothX: number;
+  smoothY: number;
+  smoothR: number;
+  appear: number;
+  hasAnchor: boolean;
+};
+
 export class EmberFistRenderer {
   private readonly app: Application;
-  private readonly root = new Container();
-  private readonly glow = new Sprite();
-  private readonly core = new Graphics();
-  private readonly sparks = new Graphics();
+  private readonly fists = new Map<string, FistState>();
+  private readonly glowTexture: Texture;
 
-  private frame: EmberFistFrame = { fist: null, palmWidth: 0.2 };
-  private smoothX = 0;
-  private smoothY = 0;
-  private smoothR = 28;
-  private appear = 0;
-  private hasAnchor = false;
+  private frame: EmberFistFrame = { fists: [] };
   private lastTs = 0;
   private rafId = 0;
   private destroyed = false;
@@ -75,22 +100,12 @@ export class EmberFistRenderer {
   private constructor(app: Application) {
     this.app = app;
 
-    this.glow.texture = radialTexture(128, [
+    this.glowTexture = radialTexture(128, [
       [0, "rgba(255,209,168,0.95)"],
       [0.25, "rgba(255,122,58,0.85)"],
       [0.55, "rgba(255,122,58,0.28)"],
       [1, "rgba(255,122,58,0)"],
     ]);
-    this.glow.anchor.set(0.5);
-    this.glow.blendMode = "add";
-    this.glow.filters = [new BlurFilter({ strength: 10, quality: 3 })];
-
-    this.core.blendMode = "add";
-    this.sparks.blendMode = "add";
-
-    this.root.addChild(this.glow, this.core, this.sparks);
-    this.app.stage.addChild(this.root);
-    this.root.visible = false;
 
     this.animate = this.animate.bind(this);
     this.rafId = requestAnimationFrame(this.animate);
@@ -144,12 +159,53 @@ export class EmberFistRenderer {
     ).toScreenMirrored(p);
   }
 
+  private ensureFist(fist: EmberFist): FistState {
+    const existing = this.fists.get(fist.key);
+    if (existing) return existing;
+
+    const glow = new Sprite(this.glowTexture);
+    glow.anchor.set(0.5);
+    glow.blendMode = "add";
+    glow.filters = [new BlurFilter({ strength: 10, quality: 3 })];
+
+    const core = new Graphics();
+    const sparks = new Graphics();
+    const embers = new Graphics();
+    core.blendMode = "add";
+    sparks.blendMode = "add";
+    embers.blendMode = "add";
+
+    const root = new Container();
+    root.addChild(glow, core, sparks, embers);
+    this.app.stage.addChild(root);
+    root.visible = false;
+
+    const state: FistState = {
+      key: fist.key,
+      root,
+      glow,
+      core,
+      sparks,
+      embers,
+      particles: [],
+      lastSpawnMs: 0,
+      target: fist,
+      smoothX: 0,
+      smoothY: 0,
+      smoothR: 28,
+      appear: 0,
+      hasAnchor: false,
+    };
+    this.fists.set(fist.key, state);
+    return state;
+  }
+
   private animate(timestamp: number): void {
     if (this.destroyed) return;
     try {
       this.renderFrame(timestamp);
     } catch {
-      this.root.visible = false;
+      for (const state of this.fists.values()) state.root.visible = false;
     }
     this.rafId = requestAnimationFrame(this.animate);
   }
@@ -158,50 +214,66 @@ export class EmberFistRenderer {
     const dt = Math.min(50, timestamp - this.lastTs) / 1000;
     this.lastTs = timestamp;
 
-    const { fist, palmWidth } = this.frame;
-
-    const target = fist ? 1 : 0;
-    const rate = fist ? 7 : 10;
-    this.appear += (target - this.appear) * Math.min(1, rate * dt);
-
-    if (this.appear < 0.02) {
-      this.root.visible = false;
-      this.hasAnchor = false;
-      return;
+    // Reconcile tracked fists with this frame's targets.
+    const seen = new Set<string>();
+    for (const fist of this.frame.fists) {
+      seen.add(fist.key);
+      this.ensureFist(fist).target = fist;
+    }
+    for (const [key, state] of this.fists) {
+      if (!seen.has(key)) state.target = null;
     }
 
-    if (fist) {
-      const p = this.toScreen(fist);
-      const r = Math.max(24, palmWidth * this.app.screen.width * 0.9);
-      if (!this.hasAnchor) {
-        this.smoothX = p.x;
-        this.smoothY = p.y;
-        this.smoothR = r;
-        this.hasAnchor = true;
-      } else {
-        const k = Math.min(1, 14 * dt);
-        this.smoothX += (p.x - this.smoothX) * k;
-        this.smoothY += (p.y - this.smoothY) * k;
-        this.smoothR += (r - this.smoothR) * Math.min(1, 8 * dt);
+    for (const state of this.fists.values()) {
+      this.stepFist(state, dt);
+      if (state.appear < 0.02) {
+        state.root.visible = false;
+        state.hasAnchor = false;
+        state.particles = [];
+        continue;
       }
+      state.root.visible = true;
+      this.drawFist(state, timestamp, dt);
     }
-
-    this.root.visible = true;
-    this.draw(timestamp);
   }
 
-  private draw(t: number): void {
-    const g = this.glow;
-    const core = this.core;
-    const sparks = this.sparks;
+  private stepFist(state: FistState, dt: number): void {
+    const target = state.target ? 1 : 0;
+    const rate = state.target ? 7 : 10;
+    state.appear += (target - state.appear) * Math.min(1, rate * dt);
+
+    const fist = state.target;
+    if (!fist) return;
+
+    const p = this.toScreen(fist.fist);
+    const r = Math.max(24, fist.palmWidth * this.app.screen.width * 0.9);
+    if (!state.hasAnchor) {
+      state.smoothX = p.x;
+      state.smoothY = p.y;
+      state.smoothR = r;
+      state.hasAnchor = true;
+    } else {
+      const k = Math.min(1, 14 * dt);
+      state.smoothX += (p.x - state.smoothX) * k;
+      state.smoothY += (p.y - state.smoothY) * k;
+      state.smoothR += (r - state.smoothR) * Math.min(1, 8 * dt);
+    }
+  }
+
+  private drawFist(state: FistState, t: number, dt: number): void {
+    const g = state.glow;
+    const core = state.core;
+    const sparks = state.sparks;
+    const embers = state.embers;
     core.clear();
     sparks.clear();
+    embers.clear();
 
-    const x = this.smoothX;
-    const y = this.smoothY;
-    const a = this.appear;
+    const x = state.smoothX;
+    const y = state.smoothY;
+    const a = state.appear;
     const breathe = 1 + Math.sin(t / 420) * 0.05;
-    const r = this.smoothR * (0.6 + 0.4 * a) * breathe;
+    const r = state.smoothR * (0.6 + 0.4 * a) * breathe;
 
     g.x = x;
     g.y = y;
@@ -236,5 +308,33 @@ export class EmberFistRenderer {
       color: GLOW_COLOR,
       alpha: (1 - pulse) * 0.35 * a,
     });
+
+    // Embers shed off the core and drift up + outward.
+    const now = performance.now();
+    if (now - state.lastSpawnMs >= EMBER_SPAWN_MS) {
+      state.lastSpawnMs = now;
+      for (let i = 0; i < EMBERS_PER_FRAME; i++) {
+        if (state.particles.length >= MAX_EMBERS) break;
+        const ang = Math.random() * Math.PI * 2;
+        const dist = r * (0.85 + Math.random() * 0.35);
+        const sx = x + Math.cos(ang) * dist;
+        const sy = y + Math.sin(ang) * dist * 0.9;
+        state.particles.push({
+          x: sx,
+          y: sy,
+          vx:
+            Math.cos(ang) * (20 + Math.random() * 50) +
+            (Math.random() - 0.5) * 30,
+          vy:
+            Math.sin(ang) * (12 + Math.random() * 30) -
+            30 -
+            Math.random() * 60,
+          life: 1,
+          size: 1 + Math.random() * 2.4,
+        });
+      }
+    }
+    stepSparks(state.particles, dt, EMBER_LIFE_MS);
+    drawSparks(embers, state.particles, SPARK_COLOR, 0.9 * a);
   }
 }

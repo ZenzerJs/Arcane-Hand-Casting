@@ -1,9 +1,12 @@
 /**
  * Transparent PixiJS Aegis shield over the mirrored webcam.
  *
- * One open palm toward the camera projects a screen-facing ward:
+ * Each open palm toward the camera projects a screen-facing ward:
  * counter-rotating rune arcs, a breathing core disc, and orbiting motes.
- * Position/radius are EMA-smoothed so the ward glides with the palm.
+ * Position/radius are EMA-smoothed per ward so each glides with its palm.
+ *
+ * The renderer tracks up to two wards (one per hand) so the player can
+ * double-cast two wards, or a ward alongside an ember on the other hand.
  *
  * Coordinates arrive camera-normalized (0..1); renderer mirrors x for selfie.
  */
@@ -16,32 +19,53 @@ import {
 } from "pixi.js";
 import type { Vec2 } from "@/vision/types";
 import { coverViewport } from "@/vision/viewport";
+import { drawSparks, stepSparks, type Spark } from "./particles";
 
-export type AegisFrame = {
-  /** Palm center (camera-normalized) or null when the ward is down. */
-  palm: Vec2 | null;
+export type AegisWard = {
+  /** Stable key so a ward's smoothing follows the same hand across frames. */
+  key: string;
+  /** Palm center (camera-normalized). */
+  palm: Vec2;
   /** Palm width (camera-normalized) — scales the shield. */
   palmWidth: number;
+};
+
+export type AegisFrame = {
+  /** Active wards this frame (0–2). */
+  wards: AegisWard[];
 };
 
 const RING_COLOR = 0x3de0d0;
 const CORE_COLOR = 0xbafff4;
 const DEEP_COLOR = 0x1c7f8f;
 const MOTES = 7;
+const MAX_MOTES = 80;
+const MOTES_PER_FRAME = 2;
+const MOTE_SPAWN_MS = 40;
+const MOTE_LIFE_MS = 700;
+
+type WardState = {
+  key: string;
+  group: Container;
+  glow: Graphics;
+  rings: Graphics;
+  core: Graphics;
+  motes: Graphics;
+  particles: Spark[];
+  lastSpawnMs: number;
+  target: AegisWard | null;
+  smoothX: number;
+  smoothY: number;
+  smoothR: number;
+  appear: number;
+  hasAnchor: boolean;
+};
 
 export class AegisRenderer {
   private readonly app: Application;
-  private readonly group = new Container();
-  private readonly glow = new Graphics();
-  private readonly rings = new Graphics();
-  private readonly core = new Graphics();
+  private readonly wards = new Map<string, WardState>();
 
-  private frame: AegisFrame = { palm: null, palmWidth: 0.2 };
-  private smoothX = 0;
-  private smoothY = 0;
-  private smoothR = 0;
-  private appear = 0;
-  private hasAnchor = false;
+  private frame: AegisFrame = { wards: [] };
   private lastTs = 0;
   private rafId = 0;
   private destroyed = false;
@@ -50,15 +74,6 @@ export class AegisRenderer {
 
   private constructor(app: Application) {
     this.app = app;
-
-    for (const g of [this.glow, this.rings, this.core]) {
-      g.blendMode = "add";
-    }
-    this.glow.filters = [new BlurFilter({ strength: 12, quality: 3 })];
-
-    this.group.addChild(this.glow, this.rings, this.core);
-    this.app.stage.addChild(this.group);
-    this.group.visible = false;
 
     this.animate = this.animate.bind(this);
     this.rafId = requestAnimationFrame(this.animate);
@@ -108,7 +123,7 @@ export class AegisRenderer {
     try {
       this.renderFrame(timestamp);
     } catch {
-      this.group.visible = false;
+      for (const state of this.wards.values()) state.group.visible = false;
     }
     this.rafId = requestAnimationFrame(this.animate);
   }
@@ -122,73 +137,123 @@ export class AegisRenderer {
     ).toScreenMirrored(p);
   }
 
+  private ensureWard(ward: AegisWard): WardState {
+    const existing = this.wards.get(ward.key);
+    if (existing) return existing;
+
+    const glow = new Graphics();
+    const rings = new Graphics();
+    const core = new Graphics();
+    const motes = new Graphics();
+    for (const g of [glow, rings, core, motes]) g.blendMode = "add";
+    glow.filters = [new BlurFilter({ strength: 12, quality: 3 })];
+
+    const group = new Container();
+    group.addChild(glow, rings, core, motes);
+    this.app.stage.addChild(group);
+    group.visible = false;
+
+    const state: WardState = {
+      key: ward.key,
+      group,
+      glow,
+      rings,
+      core,
+      motes,
+      particles: [],
+      lastSpawnMs: 0,
+      target: ward,
+      smoothX: 0,
+      smoothY: 0,
+      smoothR: 0,
+      appear: 0,
+      hasAnchor: false,
+    };
+    this.wards.set(ward.key, state);
+    return state;
+  }
+
   private renderFrame(timestamp: number): void {
     const dt = Math.min(50, timestamp - this.lastTs) / 1000;
     this.lastTs = timestamp;
 
-    const { palm, palmWidth } = this.frame;
-
-    // Ward raises/lowers smoothly instead of popping.
-    const target = palm ? 1 : 0;
-    const rate = palm ? 6 : 9;
-    this.appear += (target - this.appear) * Math.min(1, rate * dt);
-
-    if (this.appear < 0.02) {
-      this.group.visible = false;
-      // Drop the anchor while hidden so the first visible frame snaps to the
-      // palm instead of gliding in from a stale (or zero) position.
-      this.hasAnchor = false;
-      return;
+    // Reconcile tracked wards with this frame's targets.
+    const seen = new Set<string>();
+    for (const ward of this.frame.wards) {
+      seen.add(ward.key);
+      this.ensureWard(ward).target = ward;
+    }
+    for (const [key, state] of this.wards) {
+      if (!seen.has(key)) state.target = null;
     }
 
-    if (palm) {
-      const p = this.toScreen(palm);
-      const px = p.x;
-      const py = p.y;
-      const xScale = coverViewport(
-        this.videoW,
-        this.videoH,
-        this.app.screen.width,
-        this.app.screen.height,
-      ).xScale;
-      const pr = Math.max(56, palmWidth * xScale * 1.15);
-      if (!this.hasAnchor) {
-        this.smoothX = px;
-        this.smoothY = py;
-        this.smoothR = pr;
-        this.hasAnchor = true;
-      } else {
-        const k = Math.min(1, 14 * dt);
-        this.smoothX += (px - this.smoothX) * k;
-        this.smoothY += (py - this.smoothY) * k;
-        this.smoothR += (pr - this.smoothR) * Math.min(1, 8 * dt);
+    for (const state of this.wards.values()) {
+      this.stepWard(state, dt);
+      if (state.appear < 0.02) {
+        state.group.visible = false;
+        // Drop the anchor while hidden so the first visible frame snaps to
+        // the palm instead of gliding in from a stale (or zero) position.
+        state.hasAnchor = false;
+        state.particles = [];
+        continue;
       }
+      state.group.visible = true;
+      this.drawWard(state, timestamp, dt);
     }
-
-    this.group.visible = true;
-    this.draw(timestamp);
   }
 
-  private draw(t: number): void {
-    const g = this.glow;
-    const rings = this.rings;
-    const core = this.core;
-    g.clear();
+  private stepWard(state: WardState, dt: number): void {
+    // Ward raises/lowers smoothly instead of popping.
+    const target = state.target ? 1 : 0;
+    const rate = state.target ? 6 : 9;
+    state.appear += (target - state.appear) * Math.min(1, rate * dt);
+
+    const ward = state.target;
+    if (!ward) return;
+
+    const p = this.toScreen(ward.palm);
+    const xScale = coverViewport(
+      this.videoW,
+      this.videoH,
+      this.app.screen.width,
+      this.app.screen.height,
+    ).xScale;
+    const pr = Math.max(56, ward.palmWidth * xScale * 1.15);
+    if (!state.hasAnchor) {
+      state.smoothX = p.x;
+      state.smoothY = p.y;
+      state.smoothR = pr;
+      state.hasAnchor = true;
+    } else {
+      const k = Math.min(1, 14 * dt);
+      state.smoothX += (p.x - state.smoothX) * k;
+      state.smoothY += (p.y - state.smoothY) * k;
+      state.smoothR += (pr - state.smoothR) * Math.min(1, 8 * dt);
+    }
+  }
+
+  private drawWard(state: WardState, t: number, dt: number): void {
+    const glow = state.glow;
+    const rings = state.rings;
+    const core = state.core;
+    const motes = state.motes;
+    glow.clear();
     rings.clear();
     core.clear();
+    motes.clear();
 
-    const x = this.smoothX;
-    const y = this.smoothY;
-    const appear = this.appear;
+    const x = state.smoothX;
+    const y = state.smoothY;
+    const appear = state.appear;
     // Ward blooms outward while appearing.
-    const r = this.smoothR * (0.6 + 0.4 * appear);
+    const r = state.smoothR * (0.6 + 0.4 * appear);
     const breathe = 1 + Math.sin(t / 480) * 0.03;
     const R = r * breathe;
     const a = appear;
 
     // Soft halo.
-    g.circle(x, y, R * 1.06);
-    g.fill({ color: DEEP_COLOR, alpha: 0.22 * a });
+    glow.circle(x, y, R * 1.06);
+    glow.fill({ color: DEEP_COLOR, alpha: 0.22 * a });
 
     // Core disc — translucent energy film.
     core.circle(x, y, R * 0.92);
@@ -231,6 +296,30 @@ export class AegisRenderer {
       color: RING_COLOR,
       alpha: (1 - pulse) * 0.3 * a,
     });
+
+    // Motes shed off the rim and drift outward.
+    const now = performance.now();
+    if (now - state.lastSpawnMs >= MOTE_SPAWN_MS) {
+      state.lastSpawnMs = now;
+      for (let i = 0; i < MOTES_PER_FRAME; i++) {
+        if (state.particles.length >= MAX_MOTES) break;
+        const ang = Math.random() * Math.PI * 2;
+        const dist = R * (1.0 + Math.random() * 0.25);
+        const sx = x + Math.cos(ang) * dist;
+        const sy = y + Math.sin(ang) * dist;
+        const out = 15 + Math.random() * 45;
+        state.particles.push({
+          x: sx,
+          y: sy,
+          vx: Math.cos(ang) * out + (Math.random() - 0.5) * 20,
+          vy: Math.sin(ang) * out + (Math.random() - 0.5) * 20,
+          life: 1,
+          size: 1 + Math.random() * 2,
+        });
+      }
+    }
+    stepSparks(state.particles, dt, MOTE_LIFE_MS);
+    drawSparks(motes, state.particles, CORE_COLOR, 0.9 * a);
   }
 
   /** Draw n evenly spaced arc segments around (x, y). */

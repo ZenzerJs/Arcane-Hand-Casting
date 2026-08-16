@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { CameraPermission } from "@/components/CameraPermission";
 import {
   CameraFireballRenderer,
@@ -12,12 +12,16 @@ import {
 } from "@/game/render/LightningRenderer";
 import {
   AegisRenderer,
-  type AegisFrame,
+  type AegisWard,
 } from "@/game/render/AegisRenderer";
 import {
   EmberFistRenderer,
-  type EmberFistFrame,
+  type EmberFist,
 } from "@/game/render/EmberFistRenderer";
+import {
+  LaserRenderer,
+  type LaserBeam,
+} from "@/game/render/LaserRenderer";
 import { TrialRenderer } from "@/game/render/TrialRenderer";
 import {
   createTrial,
@@ -28,8 +32,30 @@ import {
   type TrialState,
 } from "@/game/trial/trial";
 import { emberGraspConfig } from "@/game/config/spells";
-import { selectSpell, type ActiveSpell } from "@/game/spells/spellSelect";
-import { fingerBolts, handStackOrientation } from "@/game/spells/pointerBeams";
+import {
+  selectSpell,
+  SpellHysteresis,
+  type ActiveSpell,
+  type HandSpell,
+} from "@/game/spells/spellSelect";
+import {
+  computeFingerBeam,
+  fingerBolts,
+  handStackOrientation,
+} from "@/game/spells/pointerBeams";
+import {
+  clearRecordedSamples,
+  EMPTY_SAMPLE_COUNTS,
+  exportRecordedSamples,
+  getSampleCounts,
+  handSignVector,
+  handScoresLabel,
+  importRecordedSamples,
+  learnFromLiveVector,
+  recordSignSample,
+  subscribeSampleCounts,
+  type HandSign,
+} from "@/game/spells/signMatching";
 import { CameraManager, type CameraStatus } from "@/vision/camera";
 import { drawDebugOverlay } from "@/vision/drawDebugOverlay";
 import { FeatureExtractor, type HandFeatures } from "@/vision/features";
@@ -41,7 +67,7 @@ import {
   type TrackingQuality,
 } from "@/vision/quality";
 import { sortHands } from "@/vision/handOrder";
-import type { Vec2, VisionFrame } from "@/vision/types";
+import type { HandFrame, Vec2, VisionFrame } from "@/vision/types";
 
 const VISION_INTERVAL_MS = 1000 / 60;
 
@@ -62,6 +88,7 @@ export function HandArenaView() {
   const lightningHostRef = useRef<HTMLDivElement>(null);
   const aegisHostRef = useRef<HTMLDivElement>(null);
   const emberHostRef = useRef<HTMLDivElement>(null);
+  const laserHostRef = useRef<HTMLDivElement>(null);
   const trialHostRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const debugCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -69,6 +96,7 @@ export function HandArenaView() {
   const lightningRef = useRef<LightningRenderer | null>(null);
   const aegisRef = useRef<AegisRenderer | null>(null);
   const emberRef = useRef<EmberFistRenderer | null>(null);
+  const laserRef = useRef<LaserRenderer | null>(null);
   const trialRendererRef = useRef<TrialRenderer | null>(null);
   const trialStateRef = useRef<TrialState>(createTrial());
   const lastTrialStepRef = useRef(0);
@@ -76,6 +104,7 @@ export function HandArenaView() {
   const landmarkerRef = useRef<HandLandmarkerService | null>(null);
   const smootherRef = useRef(new LandmarkSmoother(0.55));
   const featureExtractorRef = useRef(new FeatureExtractor());
+  const spellHysteresisRef = useRef(new SpellHysteresis());
   const lastFrameRef = useRef<VisionFrame | null>(null);
   const featuresRef = useRef<HandFeatures | null>(null);
   const qualityRef = useRef<TrackingQuality>("NO_HANDS");
@@ -100,6 +129,8 @@ export function HandArenaView() {
   const [quality, setQuality] = useState<TrackingQuality>("NO_HANDS");
   const [sizePercent, setSizePercent] = useState(0);
   const [spell, setSpell] = useState<ActiveSpell>(null);
+  const [handSpells, setHandSpells] = useState<HandSpell[]>([]);
+  const [scoresLabel, setScoresLabel] = useState("");
   const [trialHud, setTrialHud] = useState({
     status: "idle" as TrialState["status"],
     wave: 0,
@@ -107,6 +138,16 @@ export function HandArenaView() {
     lives: trialConfig.lives as number,
   });
   const [fps, setFps] = useState(0);
+  const [inferMs, setInferMs] = useState(0);
+  const [delegate, setDelegate] = useState<string | null>(null);
+  // localStorage-backed counts. `useSyncExternalStore` renders the server
+  // snapshot (0/0) during SSR/hydration, then swaps to the real counts after
+  // mount — no hydration mismatch, no effect-driven setState.
+  const sampleCounts = useSyncExternalStore(
+    subscribeSampleCounts,
+    getSampleCounts,
+    () => EMPTY_SAMPLE_COUNTS,
+  );
 
   useEffect(() => {
     const host = fireballHostRef.current;
@@ -229,6 +270,36 @@ export function HandArenaView() {
   }, []);
 
   useEffect(() => {
+    const host = laserHostRef.current;
+    if (!host) return;
+    let cancelled = false;
+    let renderer: LaserRenderer | null = null;
+
+    (async () => {
+      try {
+        renderer = await LaserRenderer.create(host);
+        if (cancelled) {
+          renderer.destroy();
+          return;
+        }
+        laserRef.current = renderer;
+      } catch (err) {
+        if (!cancelled) {
+          setEffectError(
+            err instanceof Error ? err.message : "Laser effect failed",
+          );
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      renderer?.destroy();
+      laserRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
     const host = trialHostRef.current;
     if (!host) return;
     let cancelled = false;
@@ -269,6 +340,7 @@ export function HandArenaView() {
         if (!cancelled) {
           modelReadyRef.current = true;
           setModelReady(true);
+          setDelegate(service.delegate);
         }
       } catch (err) {
         if (!cancelled) {
@@ -321,6 +393,7 @@ export function HandArenaView() {
     const video = videoRef.current;
     if (video) video.srcObject = null;
     featureExtractorRef.current.reset();
+    spellHysteresisRef.current.reset();
     lastFrameRef.current = null;
     featuresRef.current = null;
     qualityRef.current = "NO_HANDS";
@@ -328,6 +401,8 @@ export function HandArenaView() {
     setQuality("NO_HANDS");
     setSizePercent(0);
     setSpell(null);
+    setHandSpells([]);
+    setScoresLabel("");
     endTrial();
     hideEffects();
     const ctx = debugCanvasRef.current?.getContext("2d");
@@ -337,8 +412,9 @@ export function HandArenaView() {
   function hideEffects() {
     fireballRef.current?.update({ palms: null });
     lightningRef.current?.update({ bolts: [] });
-    aegisRef.current?.update({ palm: null, palmWidth: 0.2 });
-    emberRef.current?.update({ fist: null, palmWidth: 0.2 });
+    aegisRef.current?.update({ wards: [] });
+    emberRef.current?.update({ fists: [] });
+    laserRef.current?.update({ beams: [] });
     trialRendererRef.current?.update({
       wisps: [],
       hazards: [],
@@ -372,6 +448,43 @@ export function HandArenaView() {
       running: false,
     });
     syncTrialHud();
+  }
+
+  function recordSample(sign: HandSign) {
+    const hand = featuresRef.current?.hands[0];
+    if (!hand) return;
+    const palm = lastFrameRef.current?.hands[0]?.palmCenter ?? { x: 0, y: 0 };
+    recordSignSample(sign, handSignVector(hand), palm);
+  }
+
+  /** Lightning is two-handed — capture every visible hand's pose at once. */
+  function recordLightning() {
+    const hands = featuresRef.current?.hands ?? [];
+    const frame = lastFrameRef.current;
+    for (let i = 0; i < hands.length; i++) {
+      const palm = frame?.hands[i]?.palmCenter ?? { x: 0, y: 0 };
+      recordSignSample("lightning", handSignVector(hands[i]), palm);
+    }
+  }
+
+  function clearSamples() {
+    clearRecordedSamples();
+  }
+
+  async function exportSamples() {
+    try {
+      await navigator.clipboard.writeText(exportRecordedSamples());
+    } catch {
+      // Clipboard can be unavailable (permissions, http) — ignore.
+    }
+  }
+
+  function importSamples() {
+    const json = window.prompt("Paste exported sample JSON:");
+    if (!json) return;
+    if (!importRecordedSamples(json)) {
+      window.alert("Could not parse the pasted samples.");
+    }
   }
 
   function startVisionLoop() {
@@ -410,6 +523,7 @@ export function HandArenaView() {
           lightningRef.current?.setVideoSize(vw, vh);
           aegisRef.current?.setVideoSize(vw, vh);
           emberRef.current?.setVideoSize(vw, vh);
+          laserRef.current?.setVideoSize(vw, vh);
           trialRendererRef.current?.setVideoSize(vw, vh);
         }
 
@@ -432,17 +546,17 @@ export function HandArenaView() {
                 ? null
                 : handStackOrientation(palms[0], palms[1]);
 
-            const active = selectSpell({ features, stack });
+            const selection = spellHysteresisRef.current.update(
+              selectSpell({ features, stack }),
+            );
+            const fireballActive = selection.twoHand === "fireball";
+            const lightningActive = selection.twoHand === "lightning";
             // Aegis and Ember are one-hand spells — never nag "Show both
-            // hands" while the ward or fist is actively held.
+            // hands" while a ward or fist is actively held.
+            const anyHandSpell = selection.perHand.some((s) => s !== null);
             const nextQuality = assessTrackingQuality(ordered, features, {
-              requiredHands:
-                active === "aegis" || active === "ember" ? 1 : 2,
+              requiredHands: selection.twoHand ? 2 : anyHandSpell ? 1 : 2,
             });
-            const fireballActive = active === "fireball";
-            const lightningActive = active === "lightning";
-            const aegisActive = active === "aegis";
-            const emberActive = active === "ember";
 
             lastFrameRef.current = ordered;
             featuresRef.current = features;
@@ -450,7 +564,19 @@ export function HandArenaView() {
             setQuality((old) =>
               old === nextQuality ? old : nextQuality,
             );
-            setSpell((old) => (old === active ? old : active));
+            setSpell((old) =>
+              old === selection.active ? old : selection.active,
+            );
+            const nextHandSpells = selection.perHand.filter(
+              (s): s is HandSpell => s !== null,
+            );
+            setHandSpells((old) =>
+              old.length === nextHandSpells.length &&
+              old.every((s, i) => s === nextHandSpells[i])
+                ? old
+                : nextHandSpells,
+            );
+            setScoresLabel(handScoresLabel(features));
             const nextSize = palmGapPercent(palms, w, h);
             setSizePercent((old) =>
               old === nextSize ? old : nextSize,
@@ -465,24 +591,62 @@ export function HandArenaView() {
                   ? fingerBolts(ordered.hands[0], ordered.hands[1])
                   : [],
             };
-            const aegisFrame: AegisFrame =
-              aegisActive && ordered.hands.length >= 1
-                ? {
-                    palm: ordered.hands[0].palmCenter,
-                    palmWidth: features.hands[0]?.palmWidth ?? 0.2,
-                  }
-                : { palm: null, palmWidth: 0.2 };
-            const emberFrame: EmberFistFrame =
-              emberActive && ordered.hands.length >= 1
-                ? {
-                    fist: ordered.hands[0].palmCenter,
-                    palmWidth: features.hands[0]?.palmWidth ?? 0.2,
-                  }
-                : { fist: null, palmWidth: 0.2 };
+
+            // Independent one-hand spells — one anchor per matching hand.
+            const aegisWards: AegisWard[] = [];
+            const emberFists: EmberFist[] = [];
+            const laserBeams: LaserBeam[] = [];
+            ordered.hands.forEach((hand, i) => {
+              const handSpell = selection.perHand[i];
+              if (!handSpell) return;
+              const key = handKey(hand, i, ordered.hands);
+              const palmWidth = features.hands[i]?.palmWidth ?? 0.2;
+              if (handSpell === "aegis") {
+                aegisWards.push({ key, palm: hand.palmCenter, palmWidth });
+              } else if (handSpell === "ember") {
+                emberFists.push({ key, fist: hand.palmCenter, palmWidth });
+              } else {
+                // Gun hand — fire a laser from the index fingertip.
+                const beam = computeFingerBeam(hand, 1);
+                laserBeams.push({ key, from: beam.origin, to: beam.tip });
+              }
+
+              // Continuous learning: a rendered sign feeds its dataset.
+              const perHandFeatures = features.hands[i];
+              if (perHandFeatures) {
+                learnFromLiveVector(
+                  handSpell,
+                  handSignVector(perHandFeatures),
+                  hand.palmCenter,
+                  now,
+                );
+              }
+            });
+
+            // Fireball + Storm Weave share the two-hand spread-palm sign
+            // (edge-on) — auto-learn each hand so matching learns the pose.
+            if (
+              selection.twoHand === "lightning" ||
+              selection.twoHand === "fireball"
+            ) {
+              ordered.hands.forEach((hand, i) => {
+                const perHandFeatures = features.hands[i];
+                if (perHandFeatures) {
+                  learnFromLiveVector(
+                    "lightning",
+                    handSignVector(perHandFeatures),
+                    hand.palmCenter,
+                    now,
+                  );
+                }
+              });
+            }
+
             fireballRef.current?.update(fireballFrame);
             lightningRef.current?.update(lightningFrame);
-            aegisRef.current?.update(aegisFrame);
-            emberRef.current?.update(emberFrame);
+            aegisRef.current?.update({ wards: aegisWards });
+            emberRef.current?.update({ fists: emberFists });
+            laserRef.current?.update({ beams: laserBeams });
 
             // Stage 8 trial — spells act on wisps/hazards in normalized space.
             const trial = trialStateRef.current;
@@ -510,23 +674,21 @@ export function HandArenaView() {
                 arcs: lightningFrame.bolts
                   .filter((b) => b.kind === "arc")
                   .map((b) => ({ from: b.from, to: b.to })),
-                aegis:
-                  aegisFrame.palm !== null
-                    ? {
-                        center: aegisFrame.palm,
-                        radius: Math.max(0.07, aegisFrame.palmWidth * 1.15),
-                      }
-                    : null,
-                ember:
-                  emberFrame.fist !== null
-                    ? {
-                        center: emberFrame.fist,
-                        radius: Math.max(
-                          emberGraspConfig.burnRadius,
-                          emberFrame.palmWidth * 0.9,
-                        ),
-                      }
-                    : null,
+                aegis: aegisWards.map((ward) => ({
+                  center: ward.palm,
+                  radius: Math.max(0.07, ward.palmWidth * 1.15),
+                })),
+                ember: emberFists.map((fist) => ({
+                  center: fist.fist,
+                  radius: Math.max(
+                    emberGraspConfig.burnRadius,
+                    fist.palmWidth * 0.9,
+                  ),
+                })),
+                laser: laserBeams.map((beam) => ({
+                  from: beam.from,
+                  to: beam.to,
+                })),
               };
               const stepDt = now - lastTrialStepRef.current;
               lastTrialStepRef.current = now;
@@ -568,6 +730,7 @@ export function HandArenaView() {
       if (elapsed >= 500) {
         renderFpsRef.current = (frames * 1000) / elapsed;
         setFps(Math.round(renderFpsRef.current));
+        setInferMs(Math.round(inferMsRef.current));
         frames = 0;
         fpsWindowStart = now;
       }
@@ -590,7 +753,9 @@ export function HandArenaView() {
                 ? "border-aegis/50 shadow-[0_0_90px_rgba(61,224,208,0.2)]"
                 : spell === "ember"
                   ? "border-ember/50 shadow-[0_0_90px_rgba(255,122,58,0.24)]"
-                  : "border-foreground/15 shadow-[0_0_60px_rgba(139,108,255,0.08)]"
+                  : spell === "gun"
+                    ? "border-laser/50 shadow-[0_0_90px_rgba(255,92,225,0.24)]"
+                    : "border-foreground/15 shadow-[0_0_60px_rgba(139,108,255,0.08)]"
         }`}
       >
         <video
@@ -621,6 +786,11 @@ export function HandArenaView() {
         />
         <div
           ref={emberHostRef}
+          className="pointer-events-none absolute inset-0 z-20"
+          aria-hidden="true"
+        />
+        <div
+          ref={laserHostRef}
           className="pointer-events-none absolute inset-0 z-20"
           aria-hidden="true"
         />
@@ -712,11 +882,13 @@ export function HandArenaView() {
                   ? "bg-gradient-to-r from-teal-600 via-aegis to-cyan-100"
                   : spell === "ember"
                     ? "bg-gradient-to-r from-amber-400 via-ember to-red-500"
-                    : "bg-gradient-to-r from-ember via-black to-rune"
+                    : spell === "gun"
+                      ? "bg-gradient-to-r from-fuchsia-600 via-laser to-pink-200"
+                      : "bg-gradient-to-r from-ember via-black to-rune"
             }`}
             style={{
               width: `${
-                spell === "aegis" || spell === "ember"
+                spell === "aegis" || spell === "ember" || spell === "gun"
                   ? 100
                   : Math.min(sizePercent, 100)
               }%`,
@@ -740,7 +912,9 @@ export function HandArenaView() {
                     ? "border-aegis/50 bg-aegis/10 text-aegis"
                     : spell === "ember"
                       ? "border-ember/50 bg-ember/10 text-ember"
-                      : "border-foreground/15 bg-surface/70 text-foreground/45"
+                      : spell === "gun"
+                        ? "border-laser/50 bg-laser/10 text-laser"
+                        : "border-foreground/15 bg-surface/70 text-foreground/45"
             }`}
           >
             <span
@@ -753,19 +927,19 @@ export function HandArenaView() {
                       ? "anim-pulse-soft bg-aegis"
                       : spell === "ember"
                         ? "anim-pulse-soft bg-ember"
-                        : "bg-foreground/30"
+                        : spell === "gun"
+                          ? "anim-pulse-soft bg-laser"
+                          : "bg-foreground/30"
               }`}
             />
-            {spell === "fireball"
-              ? "Void Singularity"
-              : spell === "lightning"
-                ? "Storm Weave"
-                : spell === "aegis"
-                  ? "Aegis Ward"
-                  : spell === "ember"
-                    ? "Ember Grasp"
-                    : "Attuning"}
+            {spellLabel(spell, handSpells)}
           </span>
+
+          {scoresLabel && (
+            <span className="rounded-full border border-foreground/10 bg-surface/70 px-3.5 py-1.5 font-mono text-xs text-foreground/60">
+              {scoresLabel}
+            </span>
+          )}
 
           <span className="flex items-center gap-2 rounded-full border border-foreground/10 bg-surface/70 px-3.5 py-1.5 font-mono text-xs text-foreground/60">
             <span
@@ -776,7 +950,7 @@ export function HandArenaView() {
             {qualityMessage(quality)}
           </span>
 
-          {spell !== "aegis" && spell !== "ember" && sizePercent > 0 && (
+          {spell !== "aegis" && spell !== "ember" && spell !== "gun" && sizePercent > 0 && (
             <span className="rounded-full border border-foreground/10 bg-surface/70 px-3.5 py-1.5 font-mono text-xs text-foreground/60">
               reach {sizePercent}%
             </span>
@@ -793,6 +967,17 @@ export function HandArenaView() {
               }`}
             >
               {fps} fps
+            </span>
+          )}
+
+          {status === "ready" && delegate && (
+            <span
+              className={`rounded-full border border-foreground/10 bg-surface/70 px-3.5 py-1.5 font-mono text-xs ${
+                delegate === "GPU" ? "text-foreground/45" : "text-ember"
+              }`}
+            >
+              {delegate.toLowerCase()}
+              {inferMs > 0 ? ` · ${inferMs}ms` : ""}
             </span>
           )}
 
@@ -825,13 +1010,78 @@ export function HandArenaView() {
             </div>
           )}
         </div>
+
+        {/* Record samples */}
+        <div className="flex flex-wrap items-center gap-2 border-t border-foreground/10 pt-3">
+          <span className="text-xs font-semibold uppercase tracking-wider text-foreground/60">
+            Record samples
+          </span>
+          <button
+            type="button"
+            onClick={() => recordSample("ember")}
+            disabled={quality === "NO_HANDS"}
+            className="rounded-full border border-ember/50 bg-ember/10 px-3.5 py-1.5 text-xs text-ember transition-colors hover:bg-ember/20 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Record ember
+          </button>
+          <button
+            type="button"
+            onClick={() => recordSample("aegis")}
+            disabled={quality === "NO_HANDS"}
+            className="rounded-full border border-aegis/50 bg-aegis/10 px-3.5 py-1.5 text-xs text-aegis transition-colors hover:bg-aegis/20 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Record aegis
+          </button>
+          <button
+            type="button"
+            onClick={() => recordSample("gun")}
+            disabled={quality === "NO_HANDS"}
+            className="rounded-full border border-laser/50 bg-laser/10 px-3.5 py-1.5 text-xs text-laser transition-colors hover:bg-laser/20 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Record gun
+          </button>
+          <button
+            type="button"
+            onClick={recordLightning}
+            disabled={quality === "NO_HANDS"}
+            className="rounded-full border border-storm/50 bg-storm/10 px-3.5 py-1.5 text-xs text-storm transition-colors hover:bg-storm/20 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Record lightning
+          </button>
+          <span className="font-mono text-xs text-foreground/50">
+            ember {sampleCounts.ember} · aegis {sampleCounts.aegis} · gun{" "}
+            {sampleCounts.gun} · lightning {sampleCounts.lightning}
+          </span>
+          <button
+            type="button"
+            onClick={clearSamples}
+            className="rounded-full border border-foreground/15 px-3.5 py-1.5 text-xs text-foreground/60 transition-colors hover:border-ember/50 hover:text-ember"
+          >
+            Clear
+          </button>
+          <button
+            type="button"
+            onClick={exportSamples}
+            className="rounded-full border border-foreground/15 px-3.5 py-1.5 text-xs text-foreground/60 transition-colors hover:border-aegis/50 hover:text-aegis"
+          >
+            Export
+          </button>
+          <button
+            type="button"
+            onClick={importSamples}
+            className="rounded-full border border-foreground/15 px-3.5 py-1.5 text-xs text-foreground/60 transition-colors hover:border-aegis/50 hover:text-aegis"
+          >
+            Import
+          </button>
+        </div>
       </div>
 
       <p className="text-sm leading-relaxed text-foreground/55">
-        Stack open palms vertically to form a singularity. Hold both open hands
-        side by side and arcs leap fingertip to fingertip. Raise one open palm to
-        ward, or clench a fist to gather embers. Begin a trial to hunt wisps and
-        block diving hazard bolts with the ward.
+        Face both palms toward one another with fingers spread, then stack them
+        vertically to form a singularity or hold them side by side to weave
+        storm arcs fingertip to fingertip. Raise an open palm to ward, clench a
+        fist to gather embers, or point a gun hand to fire an arcane laser.
+        Every sign you hold teaches the model your hand.
       </p>
     </div>
   );
@@ -849,6 +1099,34 @@ function palmPair(
     frame.hands[0].palmCenter,
     frame.hands[1].palmCenter,
   ] as const;
+}
+
+/**
+ * Human-readable status label, including double-cast combinations.
+ */
+function spellLabel(spell: ActiveSpell, handSpells: HandSpell[]): string {
+  if (spell === "fireball") return "Void Singularity";
+  if (spell === "lightning") return "Storm Weave";
+  const names: Record<HandSpell, string> = {
+    ember: "Ember Grasp",
+    aegis: "Aegis Ward",
+    gun: "Arcane Laser",
+  };
+  const counts: Record<HandSpell, number> = { ember: 0, aegis: 0, gun: 0 };
+  for (const s of handSpells) counts[s] += 1;
+  const parts = (["ember", "aegis", "gun"] as HandSpell[])
+    .filter((s) => counts[s] > 0)
+    .map((s) => (counts[s] > 1 ? `${names[s]} ×${counts[s]}` : names[s]));
+  return parts.length > 0 ? parts.join(" + ") : "Attuning";
+}
+
+/** Stable identity for a hand so per-hand effects keep smoothing continuity. */
+function handKey(hand: HandFrame, index: number, hands: HandFrame[]): string {
+  const duplicateIds =
+    hands.filter((candidate) => candidate.id === hand.id).length > 1;
+  return hand.id === "unknown" || duplicateIds
+    ? `${hand.id}:${index}`
+    : hand.id;
 }
 
 /** Match UI size meter to renderer's screen-space palm-gap formula. */

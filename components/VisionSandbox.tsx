@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { CameraPermission } from "@/components/CameraPermission";
 import { CameraManager, type CameraStatus } from "@/vision/camera";
 import { drawDebugOverlay } from "@/vision/drawDebugOverlay";
@@ -14,6 +14,16 @@ import {
   type TrackingQuality,
 } from "@/vision/quality";
 import type { VisionFrame } from "@/vision/types";
+import {
+  clearRecordedSamples,
+  EMPTY_SAMPLE_COUNTS,
+  getSampleCounts,
+  handSignVector,
+  handScoresLabel,
+  recordSignSample,
+  subscribeSampleCounts,
+  type HandSign,
+} from "@/game/spells/signMatching";
 
 const VISION_INTERVAL_MS = 1000 / 60; // ~60 Hz inference
 
@@ -43,7 +53,16 @@ export function VisionSandbox() {
   const [handCount, setHandCount] = useState(0);
   const [facingLabel, setFacingLabel] = useState("—");
   const [featureLabel, setFeatureLabel] = useState("—");
+  const [scoresLabel, setScoresLabel] = useState("—");
   const [quality, setQuality] = useState<TrackingQuality>("NO_HANDS");
+  // localStorage-backed counts. `useSyncExternalStore` renders the server
+  // snapshot (0/0) during SSR/hydration, then swaps to the real counts after
+  // mount — no hydration mismatch, no effect-driven setState.
+  const sampleCounts = useSyncExternalStore(
+    subscribeSampleCounts,
+    getSampleCounts,
+    () => EMPTY_SAMPLE_COUNTS,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -164,6 +183,7 @@ export function VisionSandbox() {
                     "forwardVelocity",
                   )} · stable ${meanStability(features)}`,
             );
+            setScoresLabel(handScoresLabel(features));
           } catch {
             // Skip bad frames (e.g. timestamp edge cases)
           }
@@ -198,6 +218,17 @@ export function VisionSandbox() {
     rafRef.current = requestAnimationFrame(tick);
   }
 
+  function recordSample(sign: HandSign) {
+    const hand = featuresRef.current?.hands[0];
+    if (!hand) return;
+    const palm = lastFrameRef.current?.hands[0]?.palmCenter ?? { x: 0, y: 0 };
+    recordSignSample(sign, handSignVector(hand), palm);
+  }
+
+  function clearSamples() {
+    clearRecordedSamples();
+  }
+
   return (
     <div className="space-y-3">
       <div className="relative aspect-video overflow-hidden rounded-lg border border-foreground/15 bg-black">
@@ -228,9 +259,59 @@ export function VisionSandbox() {
         <span>model: {modelReady ? "ready" : modelError ? "error" : "loading"}</span>
         <span>hands: {handCount}</span>
         <span>facing: {facingLabel}</span>
+        <span>scores: {scoresLabel || "—"}</span>
         <span>features: {featureLabel}</span>
         <span>quality: {quality} — {qualityMessage(quality)}</span>
         <span>mirror: on</span>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 border-t border-foreground/10 pt-3">
+        <span className="text-xs font-semibold uppercase tracking-wider text-foreground/60">
+          Record samples
+        </span>
+        <button
+          type="button"
+          onClick={() => recordSample("ember")}
+          disabled={handCount === 0}
+          className="rounded-full border border-ember/50 bg-ember/10 px-3.5 py-1.5 text-xs text-ember transition-colors hover:bg-ember/20 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Record ember
+        </button>
+        <button
+          type="button"
+          onClick={() => recordSample("aegis")}
+          disabled={handCount === 0}
+          className="rounded-full border border-aegis/50 bg-aegis/10 px-3.5 py-1.5 text-xs text-aegis transition-colors hover:bg-aegis/20 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Record aegis
+        </button>
+        <button
+          type="button"
+          onClick={() => recordSample("gun")}
+          disabled={handCount === 0}
+          className="rounded-full border border-laser/50 bg-laser/10 px-3.5 py-1.5 text-xs text-laser transition-colors hover:bg-laser/20 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Record gun
+        </button>
+        <button
+          type="button"
+          onClick={() => recordSample("lightning")}
+          disabled={handCount === 0}
+          className="rounded-full border border-storm/50 bg-storm/10 px-3.5 py-1.5 text-xs text-storm transition-colors hover:bg-storm/20 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Record lightning
+        </button>
+        <span className="font-mono text-xs text-foreground/50">
+          ember {sampleCounts.ember} · aegis {sampleCounts.aegis} · gun{" "}
+          {sampleCounts.gun} · lightning {sampleCounts.lightning}
+        </span>
+        <button
+          type="button"
+          onClick={clearSamples}
+          className="rounded-full border border-foreground/15 px-3.5 py-1.5 text-xs text-foreground/60 transition-colors hover:border-ember/50 hover:text-ember"
+        >
+          Clear
+        </button>
       </div>
     </div>
   );

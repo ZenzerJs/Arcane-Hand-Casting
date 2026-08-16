@@ -7,12 +7,21 @@ const NAV = [
 ];
 
 const MOTES = [
-  { left: "8%", dur: "13s", delay: "0s", x: "18px", color: "bg-ember/60" },
-  { left: "22%", dur: "17s", delay: "3.2s", x: "-14px", color: "bg-rune/60" },
-  { left: "38%", dur: "15s", delay: "6.5s", x: "10px", color: "bg-aegis/50" },
-  { left: "57%", dur: "19s", delay: "1.4s", x: "-20px", color: "bg-storm/50" },
-  { left: "71%", dur: "14s", delay: "8s", x: "16px", color: "bg-ember/50" },
-  { left: "86%", dur: "18s", delay: "4.6s", x: "-12px", color: "bg-rune/50" },
+  { left: "4%", dur: "13s", delay: "0s", x: "18px", size: "10px", color: "bg-ember/60" },
+  { left: "10%", dur: "21s", delay: "2.4s", x: "-16px", size: "7px", color: "bg-aegis/50" },
+  { left: "16%", dur: "17s", delay: "3.2s", x: "-14px", size: "12px", color: "bg-rune/60" },
+  { left: "23%", dur: "15s", delay: "6.5s", x: "10px", size: "8px", color: "bg-storm/50" },
+  { left: "30%", dur: "19s", delay: "1.4s", x: "-20px", size: "11px", color: "bg-ember/50" },
+  { left: "37%", dur: "14s", delay: "8s", x: "16px", size: "9px", color: "bg-aegis/40" },
+  { left: "44%", dur: "22s", delay: "5.2s", x: "-12px", size: "7px", color: "bg-rune/50" },
+  { left: "51%", dur: "16s", delay: "0.8s", x: "22px", size: "12px", color: "bg-storm/40" },
+  { left: "58%", dur: "18s", delay: "4.6s", x: "-12px", size: "8px", color: "bg-ember/60" },
+  { left: "64%", dur: "20s", delay: "7.1s", x: "14px", size: "10px", color: "bg-rune/60" },
+  { left: "70%", dur: "15s", delay: "2.9s", x: "-18px", size: "9px", color: "bg-aegis/50" },
+  { left: "77%", dur: "23s", delay: "5.9s", x: "12px", size: "7px", color: "bg-storm/50" },
+  { left: "83%", dur: "16s", delay: "1.1s", x: "-22px", size: "11px", color: "bg-ember/50" },
+  { left: "89%", dur: "19s", delay: "3.8s", x: "18px", size: "8px", color: "bg-rune/50" },
+  { left: "95%", dur: "14s", delay: "6.2s", x: "-14px", size: "10px", color: "bg-aegis/40" },
 ];
 
 const STEPS = [
@@ -268,9 +277,11 @@ export default function HomePage() {
             {MOTES.map((m, i) => (
               <span
                 key={i}
-                className={`mote absolute bottom-0 h-1.5 w-1.5 rounded-full ${m.color}`}
+                className={`mote absolute bottom-0 rounded-full ${m.color}`}
                 style={{
                   left: m.left,
+                  width: m.size,
+                  height: m.size,
                   ["--drift-dur" as string]: m.dur,
                   ["--drift-delay" as string]: m.delay,
                   ["--drift-x" as string]: m.x,
@@ -281,14 +292,6 @@ export default function HomePage() {
 
           <div className="mx-auto grid max-w-6xl items-center gap-16 px-6 pb-24 pt-20 lg:grid-cols-[1.15fr_0.85fr] lg:pt-28">
             <div className="relative space-y-7">
-              <p
-                className="anim-rise inline-flex items-center gap-2 rounded-full border border-foreground/15 bg-surface/60 px-3.5 py-1.5 font-mono text-xs uppercase tracking-[0.25em] text-rune"
-                style={{ animationDelay: "0ms" }}
-              >
-                <span className="anim-pulse-soft h-1.5 w-1.5 rounded-full bg-aegis" />
-                Hand-tracked spellcasting
-              </p>
-
               <h1
                 className="anim-rise font-display text-5xl font-bold leading-[1.05] tracking-tight sm:text-6xl lg:text-7xl"
                 style={{ animationDelay: "80ms" }}

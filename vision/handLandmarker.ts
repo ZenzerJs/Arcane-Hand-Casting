@@ -62,6 +62,8 @@ export class HandLandmarkerService {
   private landmarker: HandLandmarker | null = null;
   // MediaPipe VIDEO mode rejects timestamps that move backward or repeat.
   private lastVideoTimestamp = -1;
+  /** Which delegate MediaPipe initialized (GPU, or CPU after fallback). */
+  delegate: "GPU" | "CPU" | null = null;
 
   /** Load WASM runtime and hand model. Safe to call more than once. */
   async initialize(options?: {
@@ -91,12 +93,14 @@ export class HandLandmarkerService {
         ...common,
         baseOptions: { modelAssetPath, delegate: "GPU" },
       });
+      this.delegate = "GPU";
     } catch {
       // Some browsers cannot create the GPU delegate, so keep CPU fallback.
       this.landmarker = await HandLandmarker.createFromOptions(vision, {
         ...common,
         baseOptions: { modelAssetPath, delegate: "CPU" },
       });
+      this.delegate = "CPU";
     }
   }
 
@@ -151,5 +155,6 @@ export class HandLandmarkerService {
     this.landmarker?.close();
     this.landmarker = null;
     this.lastVideoTimestamp = -1;
+    this.delegate = null;
   }
 }

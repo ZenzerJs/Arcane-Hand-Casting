@@ -16,6 +16,7 @@ import {
 import type { Hazard, TrialEvent, Wisp } from "@/game/trial/trial";
 import type { Vec2 } from "@/vision/types";
 import { coverViewport } from "@/vision/viewport";
+import { drawSparks, stepSparks, type Spark } from "./particles";
 
 export type TrialRenderFrame = {
   wisps: readonly Wisp[];
@@ -28,6 +29,7 @@ type Burst = {
   bornMs: number;
   color: number;
   size: number;
+  sparks: Spark[];
 };
 
 const WISP_COLOR = 0xb9a7ff;
@@ -36,6 +38,25 @@ const HAZARD_COLOR = 0xff5c49;
 const HAZARD_TAIL = 0xffa15c;
 const BLOCK_COLOR = 0x3de0d0;
 const BURST_LIFE_MS = 420;
+const BURST_SPARKS = 12;
+
+/** Radial spark shower flying out from a kill/block point. */
+function spawnBurstSparks(pos: Vec2): Spark[] {
+  const sparks: Spark[] = [];
+  for (let i = 0; i < BURST_SPARKS; i++) {
+    const ang = (i / BURST_SPARKS) * Math.PI * 2 + Math.random() * 0.5;
+    const speed = 90 + Math.random() * 180;
+    sparks.push({
+      x: pos.x,
+      y: pos.y,
+      vx: Math.cos(ang) * speed,
+      vy: Math.sin(ang) * speed,
+      life: 1,
+      size: 1.5 + Math.random() * 2.5,
+    });
+  }
+  return sparks;
+}
 
 export class TrialRenderer {
   private readonly app: Application;
@@ -50,6 +71,7 @@ export class TrialRenderer {
   private destroyed = false;
   private videoW = 0;
   private videoH = 0;
+  private lastTs = 0;
 
   private constructor(app: Application) {
     this.app = app;
@@ -98,32 +120,40 @@ export class TrialRenderer {
   /** Feed step events so kills/blocks flash where they happened. */
   pushEvents(events: readonly TrialEvent[]): void {
     const now = performance.now();
-    for (const event of events) {      if (event.kind === "wispKilled") {
+    for (const event of events) {
+      if (event.kind === "wispKilled") {
+        const pos = this.toScreen(event.pos);
         this.bursts.push({
-          pos: this.toScreen(event.pos),
+          pos,
           bornMs: now,
           color:
             event.by === "void"
               ? 0x8b6cff
               : event.by === "ember"
                 ? 0xff7a3a
-                : WISP_COLOR,
+                : event.by === "laser"
+                  ? 0xff5ce1
+                  : WISP_COLOR,
           size: 26,
+          sparks: spawnBurstSparks(pos),
         });
-      }
- else if (event.kind === "hazardBlocked") {
+      } else if (event.kind === "hazardBlocked") {
+        const pos = this.toScreen(event.pos);
         this.bursts.push({
-          pos: this.toScreen(event.pos),
+          pos,
           bornMs: now,
           color: BLOCK_COLOR,
           size: 34,
+          sparks: spawnBurstSparks(pos),
         });
       } else if (event.kind === "lifeLost") {
+        const pos = this.toScreen(event.pos);
         this.bursts.push({
-          pos: this.toScreen(event.pos),
+          pos,
           bornMs: now,
           color: HAZARD_COLOR,
           size: 44,
+          sparks: spawnBurstSparks(pos),
         });
       }
     }
@@ -156,6 +186,8 @@ export class TrialRenderer {
   }
 
   private renderFrame(t: number): void {
+    const dt = Math.min(50, t - this.lastTs) / 1000;
+    this.lastTs = t;
     this.glow.clear();
     this.bodies.clear();
     this.fx.clear();
@@ -218,7 +250,7 @@ export class TrialRenderer {
       this.bodies.fill({ color: HAZARD_COLOR, alpha: 0.95 });
     }
 
-    // Bursts expand + fade.
+    // Bursts expand + fade, shedding a radial spark shower.
     const now = performance.now();
     this.bursts = this.bursts.filter((b) => now - b.bornMs < BURST_LIFE_MS);
     for (const burst of this.bursts) {
@@ -232,6 +264,9 @@ export class TrialRenderer {
       });
       this.fx.circle(burst.pos.x, burst.pos.y, radius * 0.4);
       this.fx.fill({ color: burst.color, alpha: (1 - age) * 0.35 });
+
+      stepSparks(burst.sparks, dt, BURST_LIFE_MS, 0.96);
+      drawSparks(this.fx, burst.sparks, burst.color, (1 - age) * 0.9);
     }
   }
 }

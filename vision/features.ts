@@ -55,6 +55,11 @@ export type PerHandFeatures = {
    * 0 ≈ fist / curled fingers, 1 ≈ fully open palm.
    */
   openness: number;
+  /**
+   * Per-finger extension (0..1), thumb → index → middle → ring → pinky.
+   * The full pose shape used for sign matching; `openness` is its mean.
+   */
+  fingerExtensions: number[];
   /** Palm facing estimate already computed upstream. */
   palmFacing: HandFrame["palmFacing"];
   confidence: number;
@@ -145,6 +150,25 @@ export function fingerExtension(mcp: Vec2, pip: Vec2, tip: Vec2): number {
   return clamp((-cos + 1) / 2, 0, 1);
 }
 
+/** [mcp, pip/ip, tip] landmark indices for each digit (thumb → pinky). */
+const FINGER_CHAINS: ReadonlyArray<readonly [number, number, number]> = [
+  [THUMB_MCP, THUMB_IP, THUMB_TIP],
+  [INDEX_MCP, INDEX_PIP, INDEX_TIP],
+  [MIDDLE_MCP, MIDDLE_PIP, MIDDLE_TIP],
+  [RING_MCP, RING_PIP, RING_TIP],
+  [PINKY_MCP, PINKY_PIP, PINKY_TIP],
+];
+
+/**
+ * Per-finger extension (0..1), thumb → index → middle → ring → pinky.
+ * The full pose shape, as opposed to the averaged `openness` scalar.
+ */
+export function measureFingerExtensions(landmarks: Vec3[]): number[] {
+  return FINGER_CHAINS.map(([mcp, pip, tip]) =>
+    fingerExtension(xy(landmarks[mcp]), xy(landmarks[pip]), xy(landmarks[tip])),
+  );
+}
+
 /**
  * Average openness across thumb + four fingers for one hand.
  *
@@ -154,19 +178,10 @@ export function fingerExtension(mcp: Vec2, pip: Vec2, tip: Vec2): number {
  * Returns 0..1 where higher means more open.
  */
 export function measureOpenness(landmarks: Vec3[]): number {
-  const fingers: Array<[number, number, number]> = [
-    [THUMB_MCP, THUMB_IP, THUMB_TIP],
-    [INDEX_MCP, INDEX_PIP, INDEX_TIP],
-    [MIDDLE_MCP, MIDDLE_PIP, MIDDLE_TIP],
-    [RING_MCP, RING_PIP, RING_TIP],
-    [PINKY_MCP, PINKY_PIP, PINKY_TIP],
-  ];
-
-  let total = 0;
-  for (const [mcp, pip, tip] of fingers) {
-    total += fingerExtension(xy(landmarks[mcp]), xy(landmarks[pip]), xy(landmarks[tip]));
-  }
-  return total / fingers.length;
+  const extensions = measureFingerExtensions(landmarks);
+  return (
+    extensions.reduce((sum, value) => sum + value, 0) / extensions.length
+  );
 }
 
 /**
@@ -198,10 +213,14 @@ export function measureNormalizedPalmDistance(
  * Groups the per-hand measurements in one place for extractFeatures.
  */
 export function extractPerHandFeatures(hand: HandFrame): PerHandFeatures {
+  const fingerExtensions = measureFingerExtensions(hand.landmarks);
   return {
     id: hand.id,
     palmWidth: measurePalmWidth(hand.landmarks),
-    openness: measureOpenness(hand.landmarks),
+    fingerExtensions,
+    openness:
+      fingerExtensions.reduce((sum, value) => sum + value, 0) /
+      fingerExtensions.length,
     palmFacing: hand.palmFacing,
     confidence: hand.confidence,
     // Pure extraction has no previous frame. FeatureExtractor fills these.

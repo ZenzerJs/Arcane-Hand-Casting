@@ -4,6 +4,7 @@ import {
   extractFeatures,
   FeatureExtractor,
   fingerExtension,
+  measureFingerExtensions,
   measureNormalizedPalmDistance,
   measureOpenness,
   measurePalmWidth,
@@ -120,6 +121,33 @@ describe("measureOpenness", () => {
     });
 
     expect(measureOpenness(open)).toBeGreaterThan(measureOpenness(fist));
+  });
+});
+
+describe("measureFingerExtensions", () => {
+  it("returns one extension per finger, matching the openness mean", () => {
+    const landmarks = landmarksFrom({
+      2: { x: 0.1, y: 0.5 },
+      3: { x: 0.05, y: 0.4 },
+      4: { x: 0.0, y: 0.3 },
+      5: { x: 0.3, y: 0.5 },
+      6: { x: 0.3, y: 0.35 },
+      8: { x: 0.3, y: 0.15 },
+      9: { x: 0.4, y: 0.5 },
+      10: { x: 0.4, y: 0.35 },
+      12: { x: 0.4, y: 0.15 },
+      13: { x: 0.5, y: 0.5 },
+      14: { x: 0.5, y: 0.35 },
+      16: { x: 0.5, y: 0.15 },
+      17: { x: 0.6, y: 0.5 },
+      18: { x: 0.6, y: 0.35 },
+      20: { x: 0.6, y: 0.15 },
+    });
+    const extensions = measureFingerExtensions(landmarks);
+    expect(extensions).toHaveLength(5);
+    const mean =
+      extensions.reduce((sum, value) => sum + value, 0) / extensions.length;
+    expect(measureOpenness(landmarks)).toBeCloseTo(mean, 5);
   });
 });
 
