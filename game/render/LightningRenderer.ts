@@ -18,6 +18,7 @@ import {
 import { lightningConfig } from "@/game/config/spells";
 import type { BoltSegment } from "@/game/spells/pointerBeams";
 import type { Vec2 } from "@/vision/types";
+import { coverViewport } from "@/vision/viewport";
 
 export type LightningBolt = BoltSegment;
 
@@ -54,6 +55,8 @@ export class LightningRenderer {
   private seed = 1;
   private rafId = 0;
   private destroyed = false;
+  private videoW = 0;
+  private videoH = 0;
 
   private constructor(app: Application) {
     this.app = app;
@@ -100,6 +103,12 @@ export class LightningRenderer {
     this.frame = frame;
   }
 
+  /** Keep overlays aligned with the `object-cover`-cropped video. */
+  setVideoSize(width: number, height: number): void {
+    this.videoW = width;
+    this.videoH = height;
+  }
+
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
@@ -114,10 +123,12 @@ export class LightningRenderer {
   }
 
   private toScreen(p: Vec2): Vec2 {
-    return {
-      x: (1 - p.x) * this.app.screen.width,
-      y: p.y * this.app.screen.height,
-    };
+    return coverViewport(
+      this.videoW,
+      this.videoH,
+      this.app.screen.width,
+      this.app.screen.height,
+    ).toScreenMirrored(p);
   }
 
   private clearDraw(): void {

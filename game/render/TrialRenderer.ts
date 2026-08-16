@@ -15,6 +15,7 @@ import {
 } from "pixi.js";
 import type { Hazard, TrialEvent, Wisp } from "@/game/trial/trial";
 import type { Vec2 } from "@/vision/types";
+import { coverViewport } from "@/vision/viewport";
 
 export type TrialRenderFrame = {
   wisps: readonly Wisp[];
@@ -47,6 +48,8 @@ export class TrialRenderer {
   private bursts: Burst[] = [];
   private rafId = 0;
   private destroyed = false;
+  private videoW = 0;
+  private videoH = 0;
 
   private constructor(app: Application) {
     this.app = app;
@@ -86,18 +89,29 @@ export class TrialRenderer {
     this.frame = frame;
   }
 
+  /** Keep overlays aligned with the `object-cover`-cropped video. */
+  setVideoSize(width: number, height: number): void {
+    this.videoW = width;
+    this.videoH = height;
+  }
+
   /** Feed step events so kills/blocks flash where they happened. */
   pushEvents(events: readonly TrialEvent[]): void {
     const now = performance.now();
-    for (const event of events) {
-      if (event.kind === "wispKilled") {
+    for (const event of events) {      if (event.kind === "wispKilled") {
         this.bursts.push({
           pos: this.toScreen(event.pos),
           bornMs: now,
-          color: event.by === "void" ? 0x8b6cff : WISP_COLOR,
+          color:
+            event.by === "void"
+              ? 0x8b6cff
+              : event.by === "ember"
+                ? 0xff7a3a
+                : WISP_COLOR,
           size: 26,
         });
-      } else if (event.kind === "hazardBlocked") {
+      }
+ else if (event.kind === "hazardBlocked") {
         this.bursts.push({
           pos: this.toScreen(event.pos),
           bornMs: now,
@@ -123,10 +137,12 @@ export class TrialRenderer {
   }
 
   private toScreen(p: Vec2): Vec2 {
-    return {
-      x: (1 - p.x) * this.app.screen.width,
-      y: p.y * this.app.screen.height,
-    };
+    return coverViewport(
+      this.videoW,
+      this.videoH,
+      this.app.screen.width,
+      this.app.screen.height,
+    ).toScreenMirrored(p);
   }
 
   private animate(timestamp: number): void {

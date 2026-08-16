@@ -5,6 +5,7 @@ import { CameraPermission } from "@/components/CameraPermission";
 import { CameraManager, type CameraStatus } from "@/vision/camera";
 import { drawDebugOverlay } from "@/vision/drawDebugOverlay";
 import { FeatureExtractor, type HandFeatures } from "@/vision/features";
+import { sortHands } from "@/vision/handOrder";
 import { HandLandmarkerService } from "@/vision/handLandmarker";
 import { LandmarkSmoother } from "@/vision/landmarkSmoother";
 import {
@@ -32,6 +33,8 @@ export function VisionSandbox() {
   const featuresRef = useRef<HandFeatures | null>(null);
   const qualityRef = useRef<TrackingQuality>("NO_HANDS");
   const rafRef = useRef(0);
+  // Mirrors `modelReady` for the RAF loop (state would be a stale closure).
+  const modelReadyRef = useRef(false);
 
   const [status, setStatus] = useState<CameraStatus>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -50,7 +53,10 @@ export function VisionSandbox() {
     (async () => {
       try {
         await service.initialize();
-        if (!cancelled) setModelReady(true);
+        if (!cancelled) {
+          modelReadyRef.current = true;
+          setModelReady(true);
+        }
       } catch (err) {
         if (!cancelled) {
           setModelError(err instanceof Error ? err.message : "Model failed to load");
@@ -61,16 +67,18 @@ export function VisionSandbox() {
     return () => {
       cancelled = true;
       service.dispose();
+      modelReadyRef.current = false;
       landmarkerRef.current = null;
     };
   }, []);
 
   useEffect(() => {
     const camera = cameraRef.current;
+    const extractor = featureExtractorRef.current;
     return () => {
       cancelAnimationFrame(rafRef.current);
       camera.stop();
-      featureExtractorRef.current.reset();
+      extractor.reset();
     };
   }, []);
 
@@ -101,7 +109,13 @@ export function VisionSandbox() {
       const canvas = canvasRef.current;
       const landmarker = landmarkerRef.current;
 
-      if (video && canvas && landmarker && modelReady && video.readyState >= 2) {
+      if (
+        video &&
+        canvas &&
+        landmarker &&
+        modelReadyRef.current &&
+        video.readyState >= 2
+      ) {
         // Keep canvas pixel size matched to displayed video box.
         const w = video.clientWidth;
         const h = video.clientHeight;
@@ -119,21 +133,22 @@ export function VisionSandbox() {
             const raw = landmarker.detect(video, now);
             inferMsRef.current = raw.inferenceMs;
             const smoothed = smootherRef.current.apply(raw);
+            const ordered = { ...smoothed, hands: sortHands(smoothed.hands) };
             // Stage 3: geometry + short history become spell-ready signals.
-            const features = featureExtractorRef.current.extract(smoothed);
+            const features = featureExtractorRef.current.extract(ordered);
             // Sandbox targets Ember first, so quality currently requires 2 hands.
-            const nextQuality = assessTrackingQuality(smoothed, features, {
+            const nextQuality = assessTrackingQuality(ordered, features, {
               requiredHands: 2,
             });
-            lastFrameRef.current = smoothed;
+            lastFrameRef.current = ordered;
             featuresRef.current = features;
             qualityRef.current = nextQuality;
-            setHandCount(smoothed.hands.length);
+            setHandCount(ordered.hands.length);
             setQuality(nextQuality);
             setFacingLabel(
-              smoothed.hands.length === 0
+              ordered.hands.length === 0
                 ? "—"
-                : smoothed.hands
+                : ordered.hands
                     .map((h) => `${h.id}:${h.palmFacing}`)
                     .join(" · "),
             );
@@ -161,6 +176,8 @@ export function VisionSandbox() {
             renderFps: renderFpsRef.current,
             visionFps: visionFpsRef.current,
             inferenceMs: inferMsRef.current,
+            videoWidth: video.videoWidth,
+            videoHeight: video.videoHeight,
             features: featuresRef.current,
             quality: qualityRef.current,
           });

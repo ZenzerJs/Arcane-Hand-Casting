@@ -1,13 +1,9 @@
 /**
- * Finger-beam geometry — pure, testable.
- *
- * Every fingertip (thumb + 4 fingers) projects an invisible beam along its
- * PIP→TIP direction. Beams are never drawn; they only exist for interaction
- * tests (cross-hand segment overlap / tip proximity).
+ * Fingertip geometry — pure, testable.
  *
  * Hand stack orientation (from palm centers) gates which spell can fire:
  *   vertical stack   → fireball
- *   horizontal stack → lightning (when any cross-hand beams overlap)
+ *   horizontal stack → lightning (hands side by side, fingers spread)
  *
  * Lightning visuals: five tip↔tip arcs (matching digits). Unreadable tips
  * drop the tip↔tip attempt and emit a short local flicker instead.
@@ -29,13 +25,11 @@ const FINGER_CHAINS: ReadonlyArray<readonly [number, number, number]> = [
 
 /** Beam length in normalized units — long enough to cross the frame. */
 export const BEAM_LENGTH = 2.4;
-/** Fingertips closer than this (normalized) count as overlapping. */
-const TIP_TOUCH_DISTANCE = 0.1;
 /**
  * How strongly one axis must dominate the other for a clear stack.
  * dy/dx ≥ this → vertical; dx/dy ≥ this → horizontal.
  */
-const STACK_AXIS_RATIO = 1.25;
+const STACK_AXIS_RATIO = 1.15;
 /** Tip within this margin of frame edge = hard to trust. */
 const TIP_EDGE_MARGIN = 0.02;
 /** PIP→TIP shorter than this (normalized) = collapsed / unreadable. */
@@ -62,11 +56,6 @@ export type Beam = {
 };
 
 export type HandStack = "vertical" | "horizontal" | null;
-
-export type BeamHit = {
-  a: Beam;
-  b: Beam;
-};
 
 function xy(p: { x: number; y: number }): Vec2 {
   return { x: p.x, y: p.y };
@@ -106,69 +95,12 @@ export function computeFingerBeam(
   };
 }
 
-/** All five invisible fingertip beams for one hand. */
+/** All five fingertip beams for one hand (used for lightning arcs). */
 export function computeHandBeams(
   hand: HandFrame,
   length = BEAM_LENGTH,
 ): Beam[] {
   return FINGER_CHAINS.map((_, i) => computeFingerBeam(hand, i, length));
-}
-
-/** Standard orientation sign for segment-intersection test. */
-function cross(o: Vec2, a: Vec2, b: Vec2): number {
-  return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
-}
-
-/** True if segments p1p2 and p3p4 properly intersect. */
-export function segmentsIntersect(
-  p1: Vec2,
-  p2: Vec2,
-  p3: Vec2,
-  p4: Vec2,
-): boolean {
-  const d1 = cross(p3, p4, p1);
-  const d2 = cross(p3, p4, p2);
-  const d3 = cross(p1, p2, p3);
-  const d4 = cross(p1, p2, p4);
-  return (
-    ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
-    ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
-  );
-}
-
-/**
- * Beams overlap when they cross, or when the fingertips nearly touch.
- */
-export function beamsOverlap(a: Beam, b: Beam): boolean {
-  if (dist(a.origin, b.origin) <= TIP_TOUCH_DISTANCE) return true;
-  return segmentsIntersect(a.origin, a.tip, b.origin, b.tip);
-}
-
-/**
- * Find EVERY cross-hand beam pair that overlaps.
- * Multiple fingertip collisions → multiple lightning bolts.
- */
-export function findBeamHits(
-  handA: HandFrame,
-  handB: HandFrame,
-): BeamHit[] {
-  const beamsA = computeHandBeams(handA);
-  const beamsB = computeHandBeams(handB);
-  const hits: BeamHit[] = [];
-  for (const a of beamsA) {
-    for (const b of beamsB) {
-      if (beamsOverlap(a, b)) hits.push({ a, b });
-    }
-  }
-  return hits;
-}
-
-/** First hit only — thin wrapper for callers that want a single pair. */
-export function findBeamHit(
-  handA: HandFrame,
-  handB: HandFrame,
-): BeamHit | null {
-  return findBeamHits(handA, handB)[0] ?? null;
 }
 
 /** Visual bolt: tip↔tip arc, or short local flicker when tips unreadable. */

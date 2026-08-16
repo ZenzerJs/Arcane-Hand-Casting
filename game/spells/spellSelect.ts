@@ -1,37 +1,49 @@
 /**
  * Spell selector — pure gesture routing for the live camera view.
  *
+ *   - ONE closed fist → Ember Grasp
  *   - ONE open palm facing the camera → Aegis shield
  *   - Hands VERTICALLY stacked + open + far enough → Fireball
- *   - Hands HORIZONTALLY stacked + any finger-beam overlap → Lightning
- *   - Diagonal / missing hands / no overlap → none
+ *   - Hands HORIZONTALLY stacked + open → Lightning
+ *   - Diagonal / missing hands / wrong openness → none
  *
- * Finger beams are invisible interaction volumes (see pointerBeams.ts).
  * No Pixi/React here so Vitest can drive synthetic hands.
  */
 
-import { aegisConfig, emberOrbConfig } from "@/game/config/spells";
+import {
+  aegisConfig,
+  emberGraspConfig,
+  emberOrbConfig,
+  lightningConfig,
+} from "@/game/config/spells";
 import type { HandFeatures } from "@/vision/features";
 import type { HandStack } from "@/game/spells/pointerBeams";
 
-export type ActiveSpell = "fireball" | "lightning" | "aegis" | null;
+export type ActiveSpell =
+  | "fireball"
+  | "lightning"
+  | "aegis"
+  | "ember"
+  | null;
 
 export type SpellSelectInput = {
   features: HandFeatures;
   stack: HandStack;
-  /** True when any cross-hand finger beams overlap. */
-  beamsOverlap: boolean;
 };
 
 /**
- * Pick the active spell from stack orientation + beam interaction.
+ * Pick the active spell from hand count + stack orientation + openness.
  */
 export function selectSpell(input: SpellSelectInput): ActiveSpell {
-  const { features, stack, beamsOverlap } = input;
+  const { features, stack } = input;
 
-  // One steady open palm toward the camera raises Aegis.
   if (features.handCount === 1) {
     const hand = features.hands[0];
+    // A closed fist coalesces molten embers.
+    if (hand.openness <= emberGraspConfig.maxOpenness) {
+      return "ember";
+    }
+    // One steady open palm toward the camera raises Aegis.
     if (
       hand.openness >= aegisConfig.minOpenness &&
       hand.palmFacing === "toward"
@@ -44,10 +56,11 @@ export function selectSpell(input: SpellSelectInput): ActiveSpell {
   if (features.handCount < 2) return null;
   if (features.palmDistance === null) return null;
 
+  const everyHandOpen = features.hands.every(
+    (hand) => hand.openness >= emberOrbConfig.minOpenness,
+  );
+
   if (stack === "vertical") {
-    const everyHandOpen = features.hands.every(
-      (hand) => hand.openness >= emberOrbConfig.minOpenness,
-    );
     if (
       everyHandOpen &&
       features.palmDistance >= emberOrbConfig.minPalmDistancePalmWidths
@@ -57,8 +70,17 @@ export function selectSpell(input: SpellSelectInput): ActiveSpell {
     return null;
   }
 
-  if (stack === "horizontal" && beamsOverlap) {
-    return "lightning";
+  if (stack === "horizontal") {
+    // Hands side by side with fingers spread — arcs leap fingertip to
+    // fingertip. Openness is the only gate; beam overlap was too fragile.
+    if (
+      features.hands.every(
+        (hand) => hand.openness >= lightningConfig.minOpenness,
+      )
+    ) {
+      return "lightning";
+    }
+    return null;
   }
 
   return null;

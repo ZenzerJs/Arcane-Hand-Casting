@@ -29,6 +29,8 @@ export const trialConfig = {
   voidPullReach: 2.1,
   /** Wisps inside this fraction of core radius are consumed. */
   voidEatFraction: 0.75,
+  /** Wisps inside this fraction of the ember burn radius are incinerated. */
+  emberEatFraction: 0.9,
   /** Pull acceleration toward the singularity (normalized/s²). */
   voidPullAccel: 0.55,
   hazardRadius: 0.024,
@@ -84,10 +86,12 @@ export type TrialInput = {
   arcs: ReadonlyArray<{ from: Vec2; to: Vec2 }>;
   /** Aegis ward disc or null. */
   aegis: { center: Vec2; radius: number } | null;
+  /** Ember Grasp fist (normalized) or null. */
+  ember: { center: Vec2; radius: number } | null;
 };
 
 export type TrialEvent =
-  | { kind: "wispKilled"; pos: Vec2; by: "arc" | "void" }
+  | { kind: "wispKilled"; pos: Vec2; by: "arc" | "void" | "ember" }
   | { kind: "hazardBlocked"; pos: Vec2 }
   | { kind: "lifeLost"; pos: Vec2 }
   | { kind: "waveCleared"; wave: number }
@@ -234,6 +238,19 @@ function killWisps(
       if (d < input.voidRadius * trialConfig.voidEatFraction + wisp.radius) {
         state.score += trialConfig.scorePerWisp;
         events.push({ kind: "wispKilled", pos: { ...wisp.pos }, by: "void" });
+        return false;
+      }
+    }
+
+    // Incinerated by the ember grasp.
+    if (input.ember) {
+      const d = Math.hypot(
+        wisp.pos.x - input.ember.center.x,
+        wisp.pos.y - input.ember.center.y,
+      );
+      if (d < input.ember.radius * trialConfig.emberEatFraction + wisp.radius) {
+        state.score += trialConfig.scorePerWisp;
+        events.push({ kind: "wispKilled", pos: { ...wisp.pos }, by: "ember" });
         return false;
       }
     }

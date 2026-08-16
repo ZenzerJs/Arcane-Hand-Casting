@@ -14,6 +14,7 @@ import {
   Texture,
 } from "pixi.js";
 import type { Vec2 } from "@/vision/types";
+import { coverViewport } from "@/vision/viewport";
 
 export type CameraFireballFrame = {
   /** Two raw camera-space palm centers. Renderer mirrors x for selfie view. */
@@ -80,6 +81,8 @@ export class CameraFireballRenderer {
   private lastTimestamp = performance.now();
   private rafId = 0;
   private destroyed = false;
+  private videoW = 0;
+  private videoH = 0;
 
   private constructor(app: Application) {
     this.app = app;
@@ -151,6 +154,12 @@ export class CameraFireballRenderer {
     this.frame = frame;
   }
 
+  /** Keep overlays aligned with the `object-cover`-cropped video. */
+  setVideoSize(width: number, height: number): void {
+    this.videoW = width;
+    this.videoH = height;
+  }
+
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
@@ -179,10 +188,10 @@ export class CameraFireballRenderer {
 
     if (palms) {
       const [a, b] = palms;
-      const ax = (1 - a.x) * this.app.screen.width;
-      const ay = a.y * this.app.screen.height;
-      const bx = (1 - b.x) * this.app.screen.width;
-      const by = b.y * this.app.screen.height;
+      const ax = this.toScreen(a).x;
+      const ay = this.toScreen(a).y;
+      const bx = this.toScreen(b).x;
+      const by = this.toScreen(b).y;
       const targetX = (ax + bx) / 2;
       const targetY = (ay + by) / 2;
       const gap = Math.hypot(bx - ax, by - ay);
@@ -218,6 +227,15 @@ export class CameraFireballRenderer {
     this.root.scale.set(0.65 + this.appear * 0.35);
     this.root.alpha = Math.min(1, this.appear * 1.25);
     this.drawBlackHole(timestamp);
+  }
+
+  private toScreen(p: Vec2): Vec2 {
+    return coverViewport(
+      this.videoW,
+      this.videoH,
+      this.app.screen.width,
+      this.app.screen.height,
+    ).toScreenMirrored(p);
   }
 
   private drawBlackHole(timestamp: number): void {

@@ -15,6 +15,7 @@ import {
   Graphics,
 } from "pixi.js";
 import type { Vec2 } from "@/vision/types";
+import { coverViewport } from "@/vision/viewport";
 
 export type AegisFrame = {
   /** Palm center (camera-normalized) or null when the ward is down. */
@@ -44,6 +45,8 @@ export class AegisRenderer {
   private lastTs = 0;
   private rafId = 0;
   private destroyed = false;
+  private videoW = 0;
+  private videoH = 0;
 
   private constructor(app: Application) {
     this.app = app;
@@ -87,6 +90,12 @@ export class AegisRenderer {
     this.frame = frame;
   }
 
+  /** Keep overlays aligned with the `object-cover`-cropped video. */
+  setVideoSize(width: number, height: number): void {
+    this.videoW = width;
+    this.videoH = height;
+  }
+
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
@@ -102,6 +111,15 @@ export class AegisRenderer {
       this.group.visible = false;
     }
     this.rafId = requestAnimationFrame(this.animate);
+  }
+
+  private toScreen(p: Vec2): Vec2 {
+    return coverViewport(
+      this.videoW,
+      this.videoH,
+      this.app.screen.width,
+      this.app.screen.height,
+    ).toScreenMirrored(p);
   }
 
   private renderFrame(timestamp: number): void {
@@ -124,12 +142,16 @@ export class AegisRenderer {
     }
 
     if (palm) {
-      const px = (1 - palm.x) * this.app.screen.width;
-      const py = palm.y * this.app.screen.height;
-      const pr = Math.max(
-        56,
-        palmWidth * this.app.screen.width * 1.15,
-      );
+      const p = this.toScreen(palm);
+      const px = p.x;
+      const py = p.y;
+      const xScale = coverViewport(
+        this.videoW,
+        this.videoH,
+        this.app.screen.width,
+        this.app.screen.height,
+      ).xScale;
+      const pr = Math.max(56, palmWidth * xScale * 1.15);
       if (!this.hasAnchor) {
         this.smoothX = px;
         this.smoothY = py;

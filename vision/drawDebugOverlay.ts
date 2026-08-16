@@ -2,11 +2,15 @@ import { HAND_CONNECTIONS } from "./handConnections";
 import type { HandFeatures } from "./features";
 import type { TrackingQuality } from "./quality";
 import type { HandFrame, VisionFrame } from "./types";
+import { coverViewport } from "./viewport";
 
 export type DebugMetrics = {
   renderFps: number;
   visionFps: number;
   inferenceMs: number;
+  /** Intrinsic video size, used to undo the `object-cover` crop. */
+  videoWidth: number;
+  videoHeight: number;
   /** Stage 3 engineered features (palm dist, openness, …). */
   features: HandFeatures | null;
   /** User-facing result of Stage 3 quality gates. */
@@ -26,22 +30,10 @@ export function drawDebugOverlay(
   ctx.clearRect(0, 0, width, height);
 
   for (const hand of frame.hands) {
-    drawHand(ctx, hand, width, height);
+    drawHand(ctx, hand, width, height, metrics.videoWidth, metrics.videoHeight);
   }
 
   drawHud(ctx, frame, metrics);
-}
-
-function toScreen(
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-): { x: number; y: number } {
-  return {
-    x: (1 - x) * width,
-    y: y * height,
-  };
 }
 
 function drawHand(
@@ -49,29 +41,32 @@ function drawHand(
   hand: HandFrame,
   width: number,
   height: number,
+  videoWidth: number,
+  videoHeight: number,
 ): void {
   const color = hand.id === "left" ? "#3de0d0" : hand.id === "right" ? "#ff7a3a" : "#8b6cff";
+  const vp = coverViewport(videoWidth, videoHeight, width, height);
 
   ctx.strokeStyle = color;
   ctx.lineWidth = 2;
   ctx.beginPath();
   for (const [a, b] of HAND_CONNECTIONS) {
-    const pa = toScreen(hand.landmarks[a].x, hand.landmarks[a].y, width, height);
-    const pb = toScreen(hand.landmarks[b].x, hand.landmarks[b].y, width, height);
+    const pa = vp.toScreenMirrored({ x: hand.landmarks[a].x, y: hand.landmarks[a].y });
+    const pb = vp.toScreenMirrored({ x: hand.landmarks[b].x, y: hand.landmarks[b].y });
     ctx.moveTo(pa.x, pa.y);
     ctx.lineTo(pb.x, pb.y);
   }
   ctx.stroke();
 
   for (const point of hand.landmarks) {
-    const p = toScreen(point.x, point.y, width, height);
+    const p = vp.toScreenMirrored({ x: point.x, y: point.y });
     ctx.fillStyle = color;
     ctx.beginPath();
     ctx.arc(p.x, p.y, 3.5, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  const palm = toScreen(hand.palmCenter.x, hand.palmCenter.y, width, height);
+  const palm = vp.toScreenMirrored({ x: hand.palmCenter.x, y: hand.palmCenter.y });
   ctx.fillStyle = "#ffffff";
   ctx.beginPath();
   ctx.arc(palm.x, palm.y, 5, 0, Math.PI * 2);

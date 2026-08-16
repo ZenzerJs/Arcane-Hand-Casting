@@ -19,6 +19,7 @@ const idleInput: TrialInput = {
   voidRadius: 0,
   arcs: [],
   aegis: null,
+  ember: null,
 };
 
 describe("startTrial", () => {
@@ -76,6 +77,19 @@ describe("stepTrial", () => {
     const events = stepTrial(state, input, 16, 16);
     expect(
       events.some((e) => e.kind === "wispKilled" && e.by === "void"),
+    ).toBe(true);
+  });
+
+  it("incinerates a wisp inside the ember fist", () => {
+    const state = startTrial(createTrial(), 0, fixedRng([0.5]));
+    const wisp = state.wisps[0];
+    const input: TrialInput = {
+      ...idleInput,
+      ember: { center: { ...wisp.pos }, radius: 0.1 },
+    };
+    const events = stepTrial(state, input, 16, 16);
+    expect(
+      events.some((e) => e.kind === "wispKilled" && e.by === "ember"),
     ).toBe(true);
   });
 

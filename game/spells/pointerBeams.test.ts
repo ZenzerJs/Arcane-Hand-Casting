@@ -1,15 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { HandFrame, Vec3 } from "@/vision/types";
 import {
-  beamsOverlap,
   computeFingerBeam,
   computeHandBeams,
   fingerBolts,
-  findBeamHits,
   handStackOrientation,
-  segmentsIntersect,
   tipReadable,
-  type Beam,
 } from "./pointerBeams";
 
 /** 21 zeroed landmarks; caller overrides the indices it cares about. */
@@ -77,75 +73,6 @@ describe("computeHandBeams", () => {
     expect(beam.origin.y).toBeCloseTo(0.4);
     // Direction is up (−y); length 2 → tip.y = 0.4 - 2.
     expect(beam.tip.y).toBeCloseTo(-1.6);
-  });
-});
-
-describe("segmentsIntersect", () => {
-  it("true for an X crossing", () => {
-    expect(
-      segmentsIntersect(
-        { x: 0, y: 0 },
-        { x: 2, y: 2 },
-        { x: 0, y: 2 },
-        { x: 2, y: 0 },
-      ),
-    ).toBe(true);
-  });
-
-  it("false for parallel segments", () => {
-    expect(
-      segmentsIntersect(
-        { x: 0, y: 0 },
-        { x: 2, y: 0 },
-        { x: 0, y: 1 },
-        { x: 2, y: 1 },
-      ),
-    ).toBe(false);
-  });
-});
-
-describe("beamsOverlap", () => {
-  it("true when beams cross", () => {
-    const a: Beam = {
-      origin: { x: 0, y: 0 },
-      tip: { x: 2, y: 2 },
-      finger: 1,
-    };
-    const b: Beam = {
-      origin: { x: 0, y: 2 },
-      tip: { x: 2, y: 0 },
-      finger: 1,
-    };
-    expect(beamsOverlap(a, b)).toBe(true);
-  });
-
-  it("true when fingertips nearly touch", () => {
-    const a: Beam = {
-      origin: { x: 0, y: 0 },
-      tip: { x: 0, y: -2 },
-      finger: 1,
-    };
-    const b: Beam = {
-      origin: { x: 0.05, y: 0 },
-      tip: { x: 0.05, y: -2 },
-      finger: 1,
-    };
-    expect(beamsOverlap(a, b)).toBe(true);
-  });
-});
-
-describe("findBeamHits", () => {
-  it("finds hits when two hands have overlapping beams", () => {
-    const a = upwardHand(0.3);
-    const b = upwardHand(0.34);
-    expect(findBeamHits(a, b).length).toBeGreaterThan(0);
-  });
-
-  it("returns multiple bolts when several fingertips collide", () => {
-    // Nearby fingertip layout → every digit nearly touches its twin.
-    const a = upwardHand(0.3);
-    const b = upwardHand(0.32);
-    expect(findBeamHits(a, b).length).toBeGreaterThan(1);
   });
 });
 

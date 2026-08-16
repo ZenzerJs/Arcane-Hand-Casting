@@ -11,7 +11,7 @@ export default function SandboxPage() {
       <div className="space-y-2">
         <h1 className="text-3xl font-semibold tracking-tight">Spell Sandbox</h1>
         <p className="text-foreground/70">
-          Stage 2 vision debug: local MediaPipe landmarks, mirrored overlay, palm distance,
+          Vision debug: local MediaPipe landmarks, mirrored overlay, palm distance,
           and FPS. Video stays on this device.
         </p>
       </div>

@@ -1,6 +1,6 @@
 import { estimatePalmFacing } from "./palmFacing";
 import { emaVec3 } from "./smoothing";
-import type { HandFrame, HandId, Vec2, Vec3, VisionFrame } from "./types";
+import type { HandFrame, Vec2, Vec3, VisionFrame } from "./types";
 
 type HandHistory = {
   landmarks: Vec3[];
@@ -11,7 +11,7 @@ type HandHistory = {
  */
 export class LandmarkSmoother {
   private readonly alpha: number;
-  private history = new Map<HandId, HandHistory>();
+  private history = new Map<string, HandHistory>();
 
   constructor(alpha = 0.55) {
     this.alpha = alpha;
@@ -22,21 +22,29 @@ export class LandmarkSmoother {
   }
 
   apply(frame: VisionFrame): VisionFrame {
-    const hands = frame.hands.map((hand) => this.smoothHand(hand));
+    const activeKeys = new Set<string>();
+    const hands = frame.hands.map((hand, index) => {
+      const key = historyKey(hand, index, frame.hands);
+      activeKeys.add(key);
+      return this.smoothHand(hand, key);
+    });
+    for (const key of this.history.keys()) {
+      if (!activeKeys.has(key)) this.history.delete(key);
+    }
     return { ...frame, hands };
   }
 
-  private smoothHand(hand: HandFrame): HandFrame {
-    const prev = this.history.get(hand.id);
+  private smoothHand(hand: HandFrame, key: string): HandFrame {
+    const prev = this.history.get(key);
     if (!prev || prev.landmarks.length !== hand.landmarks.length) {
-      this.history.set(hand.id, { landmarks: hand.landmarks.map((p) => ({ ...p })) });
+      this.history.set(key, { landmarks: hand.landmarks.map((p) => ({ ...p })) });
       return hand;
     }
 
     const landmarks = hand.landmarks.map((point, i) =>
       emaVec3(point, prev.landmarks[i], this.alpha),
     );
-    this.history.set(hand.id, { landmarks });
+    this.history.set(key, { landmarks });
 
     const wrist = landmarks[0];
     const palm = mean([
@@ -66,4 +74,21 @@ function mean(points: Vec3[]): Vec2 {
     y: 0,
   });
   return { x: sum.x / points.length, y: sum.y / points.length };
+}
+
+/**
+ * Use handedness as a stable identity. When MediaPipe reports unknown or
+ * duplicate labels, append the array index so two hands never share one
+ * smoothing buffer (which would cross-contaminate their landmarks).
+ */
+function historyKey(
+  hand: HandFrame,
+  index: number,
+  allHands: HandFrame[],
+): string {
+  const duplicateIds =
+    allHands.filter((candidate) => candidate.id === hand.id).length > 1;
+  return hand.id === "unknown" || duplicateIds
+    ? `${hand.id}:${index}`
+    : hand.id;
 }

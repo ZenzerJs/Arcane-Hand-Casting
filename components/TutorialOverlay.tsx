@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
  * First-run tutorial — Stage 7.
@@ -73,40 +73,90 @@ const STEPS: Step[] = [
       </svg>
     ),
   },
+  {
+    title: "Ember Grasp",
+    body: "Clench one fist toward the camera. Molten embers gather around your hand and burn anything that drifts close.",
+    accent: "text-ember",
+    icon: (
+      <svg viewBox="0 0 48 48" className="h-12 w-12" aria-hidden="true">
+        <path
+          d="M24 4c2 6-4 9-4 15 0 3 2 6 6 6 5 0 7-3 7-7 0-4-3-7-3-12 4 4 8 8 8 13 0 8-6 14-14 14S10 27 10 19c0-5 4-9 6-12 1 3 0 5-1 7 0-5 4-8 9-10Z"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.4"
+          strokeLinejoin="round"
+        />
+      </svg>
+    ),
+  },
 ];
 
 export function TutorialOverlay() {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState(0);
   const nextButtonRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
 
-  useEffect(() => {
-    try {
-      if (!window.localStorage.getItem(STORAGE_KEY)) setOpen(true);
-    } catch {
-      // Storage blocked (private mode) — show once per session instead.
-      setOpen(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!open) return;
-    nextButtonRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") dismiss();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open]);
-
-  function dismiss() {
+  const dismiss = useCallback(() => {
     try {
       window.localStorage.setItem(STORAGE_KEY, "1");
     } catch {
       // Ignore — overlay simply reappears next session.
     }
     setOpen(false);
-  }
+  }, []);
+
+  const trapTab = useCallback((e: KeyboardEvent) => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const focusables = dialog.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    );
+    if (focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement;
+    if (e.shiftKey && (active === first || !dialog.contains(active))) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }, []);
+
+  useEffect(() => {
+    let seen = true;
+    try {
+      seen = !!window.localStorage.getItem(STORAGE_KEY);
+    } catch {
+      // Storage blocked (private mode) — show once per session instead.
+      seen = false;
+    }
+    if (seen) return;
+    // Seed the overlay from a client-only store on mount.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setOpen(true);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    restoreFocusRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    nextButtonRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") dismiss();
+      if (e.key === "Tab") trapTab(e);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      restoreFocusRef.current?.focus();
+    };
+  }, [open, dismiss, trapTab]);
 
   function next() {
     if (step >= STEPS.length - 1) {
@@ -122,6 +172,7 @@ export function TutorialOverlay() {
 
   return (
     <div
+      ref={dialogRef}
       role="dialog"
       aria-modal="true"
       aria-label="How to cast spells"

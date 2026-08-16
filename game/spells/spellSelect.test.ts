@@ -31,105 +31,63 @@ function features(
 }
 
 describe("selectSpell", () => {
-  it("aegis with one open palm toward camera", () => {
+  it("ember with one closed fist", () => {
     expect(
-      selectSpell({
-        features: features([0.9], null),
-        stack: null,
-        beamsOverlap: false,
-      }),
-    ).toBe("aegis");
+      selectSpell({ features: features([0.3], null), stack: null }),
+    ).toBe("ember");
   });
 
-  it("no aegis when the single hand is closed", () => {
+  it("aegis with one open palm toward camera", () => {
     expect(
-      selectSpell({
-        features: features([0.3], null),
-        stack: null,
-        beamsOverlap: false,
-      }),
-    ).toBeNull();
+      selectSpell({ features: features([0.9], null), stack: null }),
+    ).toBe("aegis");
   });
 
   it("no aegis when palm faces away", () => {
     const f = features([0.9], null);
     f.hands[0] = { ...f.hands[0], palmFacing: "away" };
-    expect(
-      selectSpell({
-        features: f,
-        stack: null,
-        beamsOverlap: false,
-      }),
-    ).toBeNull();
+    expect(selectSpell({ features: f, stack: null })).toBeNull();
   });
 
   it("returns null with zero hands", () => {
     expect(
-      selectSpell({
-        features: features([], null),
-        stack: null,
-        beamsOverlap: false,
-      }),
+      selectSpell({ features: features([], null), stack: null }),
     ).toBeNull();
   });
 
   it("fireball when vertically stacked + open + far", () => {
     expect(
-      selectSpell({
-        features: features([0.8, 0.75], 1.5),
-        stack: "vertical",
-        beamsOverlap: false,
-      }),
+      selectSpell({ features: features([0.8, 0.75], 1.5), stack: "vertical" }),
     ).toBe("fireball");
   });
 
   it("no fireball when vertical but hands closed", () => {
     expect(
-      selectSpell({
-        features: features([0.2, 0.1], 1.5),
-        stack: "vertical",
-        beamsOverlap: false,
-      }),
+      selectSpell({ features: features([0.2, 0.1], 1.5), stack: "vertical" }),
     ).toBeNull();
   });
 
-  it("no fireball when open hands are horizontal", () => {
+  it("lightning when horizontal + open", () => {
     expect(
       selectSpell({
-        features: features([0.9, 0.9], 1.5),
+        features: features([0.8, 0.75], 1.5),
         stack: "horizontal",
-        beamsOverlap: false,
-      }),
-    ).toBeNull();
-  });
-
-  it("lightning when horizontal + beams overlap", () => {
-    expect(
-      selectSpell({
-        features: features([0.5, 0.5], 1.5),
-        stack: "horizontal",
-        beamsOverlap: true,
       }),
     ).toBe("lightning");
   });
 
-  it("no lightning when horizontal but beams miss", () => {
+  it("no lightning when horizontal but hands closed", () => {
     expect(
       selectSpell({
-        features: features([0.5, 0.5], 1.5),
+        features: features([0.3, 0.3], 1.5),
         stack: "horizontal",
-        beamsOverlap: false,
       }),
     ).toBeNull();
   });
 
-  it("no lightning when beams overlap but stack is vertical", () => {
+  it("no spell when diagonal", () => {
     expect(
-      selectSpell({
-        features: features([0.5, 0.5], 1.5),
-        stack: "vertical",
-        beamsOverlap: true,
-      }),
+      selectSpell({ features: features([0.9, 0.9], 1.5), stack: null }),
     ).toBeNull();
   });
 });

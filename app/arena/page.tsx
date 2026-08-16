@@ -3,8 +3,9 @@ import { ArenaView } from "@/components/ArenaView";
 
 const GESTURES = [
   { label: "Void", hint: "palms stacked", dot: "bg-rune" },
-  { label: "Storm", hint: "fingers side by side", dot: "bg-storm" },
+  { label: "Storm", hint: "hands side by side", dot: "bg-storm" },
   { label: "Ward", hint: "one open palm", dot: "bg-aegis" },
+  { label: "Ember", hint: "one fist", dot: "bg-ember" },
 ];
 
 export default function ArenaPage() {
