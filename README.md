@@ -149,4 +149,4 @@ Detailed technical design specs are located in `/docs`:
 
 ---
 
-*Developed by [ZenzerJs](https://github.com/ZenzerJs)*
+*Developed by [ZenzerJs](https://github.com/ZenzerJs) & [Somerandomdev-ui](https://github.com/SOmerandomdev-ui)*
